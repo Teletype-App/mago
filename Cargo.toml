@@ -1,6 +1,6 @@
 [package]
 name = "mago"
-version = "1.51.1-p4"
+version = "1.51.1-p5"
 edition = "2024"
 authors = ["Seifeddine Gmati <azjezz@carthage.software>"]
 license = "MIT OR Apache-2.0"
@@ -253,6 +253,7 @@ tera = "1.20"
 temp-env = "0.3.6"
 
 [dependencies]
+bincode = { workspace = true }
 mago-allocator = { workspace = true }
 mago-word = { workspace = true }
 mago-bytes = { workspace = true }

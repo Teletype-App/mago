@@ -49,12 +49,33 @@ def git_base(workspace):
     return command(['git', 'commit-tree', tree.decode()], workspace, input=b'PHP fixture baseline\n', env=identity).stdout.decode().strip()
 
 
+def cache_shape_contexts(binary):
+    with tempfile.TemporaryDirectory(prefix='mago-native-shape-cache-') as temp:
+        workspace = Path(temp)
+        (workspace / 'cases').mkdir()
+        (workspace / 'dependencies').mkdir()
+        write_config(workspace)
+        leaf = workspace / 'cases/callback.php'
+        leaf.write_text("<?php\n/** @param callable(array{flag: bool, 0: int}): void $callback */\nfunction invoke(callable $callback): void { $callback(['flag' => true, 0 => 1]); }\nfunction probe(): void {\n    invoke(/** @param array{flag: bool, 0: int} $value */ static function(array $value): void {\n        if ($value['flag']) { throw new \\DomainException(); }\n    });\n}\n")
+        initial = analyze(binary, workspace, '--throws-cache', 'state.json')
+        assert 'DomainException' in missing(initial, 'probe')[0]['message']
+        assert (workspace / 'state.json').is_file(), 'Array shapes in callable contexts must persist a cache'
+        json.loads((workspace / 'state.json').read_text())
+        assert signature(analyze(binary, workspace, '--throws-cache', 'state.json')) == signature(initial)
+        leaf.write_text(leaf.read_text().replace('DomainException', 'LengthException'))
+        changed = analyze(binary, workspace, '--throws-cache', 'state.json')
+        assert 'LengthException' in missing(changed, 'probe')[0]['message']
+        assert signature(changed) == signature(analyze(binary, workspace))
+        print('Callable array-shape contexts persist, reload and invalidate: passed', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mago', required=True)
     args = parser.parse_args()
     binary = str(Path(args.mago).resolve())
     corpus = Path(__file__).resolve().parent
+    cache_shape_contexts(binary)
     # Check disputed callback effects against PHP execution, independently of both analyzers.
     runtime = command([
         'prlimit', '--as=1073741824', '--cpu=10', 'timeout', '15s',

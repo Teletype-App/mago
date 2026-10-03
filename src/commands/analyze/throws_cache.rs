@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use foldhash::{HashMap, HashSet};
 use mago_analyzer::throws::{FunctionThrowsSummary, ThrowsContext, ThrowsSummaries};
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::ttype::union::TUnion;
 use mago_database::file::{FileId, FileType};
 use mago_database::{DatabaseReader, ReadDatabase};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA: u32 = 6;
+const SCHEMA: u32 = 7;
 const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,8 +26,45 @@ struct Stored {
     environment: String,
     inputs: Vec<(FileId, Input)>,
     functions: Vec<(FunctionLikeIdentifier, FunctionThrowsSummary)>,
-    contexts: Vec<(ThrowsContext, FunctionThrowsSummary)>,
+    contexts: Vec<(StoredContext, FunctionThrowsSummary)>,
     dependencies: Vec<(FileId, Vec<FileId>)>,
+}
+
+// TUnion contains maps with enum and tuple keys, including PHP array shapes.
+// Preserve its complete type information with the same codec used by the prelude.
+#[derive(Serialize, Deserialize)]
+struct StoredContext {
+    function: FunctionLikeIdentifier,
+    arguments: Vec<(usize, Vec<u8>)>,
+}
+
+impl StoredContext {
+    fn encode(context: &ThrowsContext) -> Result<Self, bincode::error::EncodeError> {
+        let arguments = context
+            .arguments
+            .iter()
+            .map(|(index, value)| {
+                bincode::serde::encode_to_vec(value, bincode::config::standard()).map(|bytes| (*index, bytes))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { function: context.function, arguments })
+    }
+
+    fn decode(self) -> Option<ThrowsContext> {
+        let arguments = self
+            .arguments
+            .into_iter()
+            .map(|(index, bytes)| {
+                let (value, consumed) = bincode::serde::decode_from_slice::<TUnion, _>(
+                    &bytes,
+                    bincode::config::standard().with_limit::<{ MAX_CACHE_BYTES as usize }>(),
+                )
+                .ok()?;
+                (consumed == bytes.len()).then_some((index, value))
+            })
+            .collect::<Option<_>>()?;
+        Some(ThrowsContext { function: self.function, arguments })
+    }
 }
 
 pub(super) struct ThrowsCache {
@@ -104,7 +142,11 @@ impl ThrowsCache {
                     .map(|(id, _)| *id)
                     .collect(),
                 functions: stored.functions.into_iter().collect(),
-                contexts: stored.contexts.into_iter().collect(),
+                contexts: stored
+                    .contexts
+                    .into_iter()
+                    .map(|(context, summary)| context.decode().map(|context| (context, summary)))
+                    .collect::<Option<_>>()?,
                 dependencies,
             },
             affected,
@@ -127,7 +169,11 @@ impl ThrowsCache {
             environment: self.environment.clone(),
             inputs: self.inputs.iter().map(|(id, input)| (*id, input.clone())).collect(),
             functions: summaries.functions.iter().map(|(id, summary)| (*id, summary.clone())).collect(),
-            contexts: summaries.contexts.iter().map(|(key, summary)| (key.clone(), summary.clone())).collect(),
+            contexts: summaries
+                .contexts
+                .iter()
+                .map(|(context, summary)| StoredContext::encode(context).map(|context| (context, summary.clone())))
+                .collect::<Result<_, _>>()?,
             dependencies: summaries
                 .dependencies
                 .iter()
