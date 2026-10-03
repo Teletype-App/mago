@@ -464,6 +464,9 @@ impl ThrowsSummaries {
                 if summaries.functions.get(id) != Some(summary)
                     && let Some(metadata) = codebase.get_function_like(id)
                 {
+                    if trace_enabled && (32..36).contains(&round) && work.len() <= 16 {
+                        tracing::trace!(function = ?id, previous = ?summaries.functions.get(id), current = ?summary, "Changed throws function summary");
+                    }
                     changed.insert(metadata.span.file_id);
                 }
             }
@@ -471,6 +474,9 @@ impl ThrowsSummaries {
                 if summaries.contexts.get(key) != Some(summary)
                     && let Some(metadata) = codebase.get_function_like(&key.function)
                 {
+                    if trace_enabled && (32..36).contains(&round) && work.len() <= 16 {
+                        tracing::trace!(function = ?key.function, arguments = ?key.arguments, previous = ?summaries.contexts.get(key), current = ?summary, "Changed throws context summary");
+                    }
                     changed.insert(metadata.span.file_id);
                 }
             }
