@@ -16,7 +16,7 @@
     "composer/bin/mago"
   ],
   "extra": {
-    "mago-binary-version": "1.51.1-p3"
+    "mago-binary-version": "1.51.1-p4"
   },
   "replace": {
     "carthage-software/mago": "self.version"
