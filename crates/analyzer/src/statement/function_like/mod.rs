@@ -178,14 +178,12 @@ where
     {
         let span = function_like_metadata.span;
         let target_span = target.span;
-        // A specialized pass needs the target, its enclosing scopes for captures,
-        // and its nested callables. Keep sibling closures as well: their inferred
-        // return types can initialize variables captured by the target closure.
+        // A specialized pass needs the target, its enclosing scopes for captures, and its nested callables.
+        // Keep sibling closures as well: their return types can initialize variables captured by the target closure.
         // Other named bodies already have general summaries.
-        if span.file_id != target_span.file_id
-            || span.end.offset <= target_span.start.offset
-            || target_span.end.offset <= span.start.offset
-        {
+        let overlap_start = span.start.offset.max(target_span.start.offset);
+        let overlap_end = span.end.offset.min(target_span.end.offset);
+        if span.file_id != target_span.file_id || overlap_start >= overlap_end {
             return Ok(AnalysisArtifacts::new()
                 .with_variable_definedness_targets(parent_artifacts.variable_definedness_targets()));
         }
