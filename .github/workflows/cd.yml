@@ -3,7 +3,7 @@ name: Teletype Binary Releases
 on:
   workflow_dispatch:
   push:
-    tags: ["*-patch.*"]
+    tags: ["*-p[0-9]*"]
 
 permissions:
   contents: read
@@ -30,12 +30,12 @@ jobs:
       - id: metadata
         run: |
           python3 - <<'PY'
-          import json, os, tomllib
+          import json, os, re, tomllib
           from pathlib import Path
           cargo = tomllib.loads(Path("Cargo.toml").read_text())
           package = json.loads(Path("composer.json").read_text())
           version = cargo["package"]["version"]
-          assert "-patch." in version, version
+          assert re.fullmatch(r"\d+\.\d+\.\d+-p[1-9]\d*", version), version
           assert package["name"] == "teletype/mago"
           assert package["extra"]["mago-binary-version"] == version
           publish = os.environ["GITHUB_REF"] == f"refs/tags/{version}"
@@ -134,7 +134,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           test "$(find dist -type f | wc -l)" -eq 7
-          gh release create "$RELEASE_VERSION" dist/* --verify-tag --draft --title "Mago $RELEASE_VERSION" --generate-notes
+          gh release create "$RELEASE_VERSION" dist/* --verify-tag --draft --title "Teletype Mago $RELEASE_VERSION" --generate-notes
           gh release edit "$RELEASE_VERSION" --draft=false --latest
       - uses: shivammathur/setup-php@v2
         with:

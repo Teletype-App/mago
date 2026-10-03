@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='mago-composer-install-') as temporary:
     (workspace / 'composer.json').write_text(json.dumps({
         'name': 'teletype/installation-probe',
         'repositories': [{'type': 'vcs', 'url': 'https://github.com/Teletype-App/mago'}],
-        'require-dev': {'teletype/mago': args.version},
+        'require-dev': {'teletype/mago': '^1.51'},
     }))
     environment = dict(os.environ)
     token = environment.get('GITHUB_TOKEN') or environment.get('GH_TOKEN')

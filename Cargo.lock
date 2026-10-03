@@ -1380,7 +1380,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "mago"
-version = "1.51.1-patch.1"
+version = "1.51.1-p2"
 dependencies = [
  "blake3",
  "clap",
