@@ -13,6 +13,7 @@ class Team1375 {}
 function executeSearch1375(string $className): array { return []; }
 
 /**
+ * @mago-expect analysis:unhandled-thrown-type
  * @template T of Player1375|Team1375
  * @param class-string<T> $className
  * @return list<T>

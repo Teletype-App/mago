@@ -12,6 +12,7 @@ abstract class Enumeration {
     abstract public static function cases(): array;
 
     /**
+     * @mago-expect analysis:throws-inference-incomplete
      * @throws InvalidArgumentException
      * @return TCases
      */
@@ -35,6 +36,7 @@ class MyEnum extends Enumeration {
 }
 
 /**
+ * @mago-expect analysis:throws-inference-incomplete
  * @throws InvalidArgumentException
  * @return 'case1'|'case2'
  */

@@ -7,6 +7,7 @@ enum SomEnum: string
     case Negative = 'negative';
     case Positive = 'positive';
 
+    /** @mago-expect analysis:unhandled-thrown-type */
     public static function fromNumber(int $number): self
     {
         return match (true) {
