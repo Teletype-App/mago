@@ -94,7 +94,7 @@ pub fn execute(command: SelfUpdateCommand, project_version_pin: Option<String>) 
 
             info!("Fetching project version {}... ", pin);
 
-            github::get_release_version(REPO_OWNER, REPO_NAME, pin_string)?
+            find_latest_release_satisfying(&pin)?
         } else {
             info!("Resolving latest release satisfying project pin `{pin}`...");
 

@@ -10,10 +10,6 @@ pub fn is_version_compatible(current: &str, other: &str) -> Result<bool, UpdateE
     let current = Version::parse(current)?;
     let other = Version::parse(other)?;
 
-    if current.cmp_precedence(&other).is_eq() {
-        return Ok(true);
-    }
-
     Ok(if !current.pre.is_empty() {
         current.major == other.major
             && ((other.minor >= current.minor) || (current.minor == other.minor && other.patch >= current.patch))
@@ -26,18 +22,4 @@ pub fn is_version_compatible(current: &str, other: &str) -> Result<bool, UpdateE
     } else {
         false
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{is_version_compatible, is_version_newer};
-
-    #[test]
-    fn teletype_build_revisions_are_newer_and_compatible() {
-        let current = "1.51.1+teletype.1";
-        let next = "1.51.1+teletype.2";
-        assert!(is_version_newer(current, next).unwrap());
-        assert!(is_version_compatible(current, next).unwrap());
-        assert!(!is_version_newer(next, current).unwrap());
-    }
 }

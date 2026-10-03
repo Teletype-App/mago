@@ -3,7 +3,7 @@ name: Teletype Binary Releases
 on:
   workflow_dispatch:
   push:
-    tags: ["*teletype.*"]
+    tags: ["*-patch.*"]
 
 permissions:
   contents: read
@@ -35,7 +35,7 @@ jobs:
           cargo = tomllib.loads(Path("Cargo.toml").read_text())
           package = json.loads(Path("composer.json").read_text())
           version = cargo["package"]["version"]
-          assert "+teletype." in version, version
+          assert "-patch." in version, version
           assert package["name"] == "teletype/mago"
           assert package["extra"]["mago-binary-version"] == version
           publish = os.environ["GITHUB_REF"] == f"refs/tags/{version}"

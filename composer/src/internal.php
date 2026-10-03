@@ -104,7 +104,7 @@ function locked(string $lockFile, \Closure $callback): mixed
  * @throws RuntimeException If the version cannot be determined.
  * @throws \JsonException If the package metadata is invalid.
  *
- * @return string The pinned binary release (e.g., "1.51.1+teletype.1").
+ * @return string The pinned binary release (e.g., "1.51.1-patch.1").
  *
  * @internal
  */

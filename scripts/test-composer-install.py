@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix='mago-composer-install-') as temporary:
     version = subprocess.check_output(['php', str(binary), '--version'], cwd=workspace, env=environment, text=True).strip()
     assert version == f'mago {args.version}', version
     (workspace / 'probe.php').write_text('<?php function leaf(): void { throw new \\RuntimeException(); } function probe(): void { leaf(); }\n')
-    (workspace / 'mago.toml').write_text('php-version = "8.3.0"\n[source]\npaths = ["probe.php"]\n[analyzer]\ncheck-throws = true\nfind-unused-definitions = false\n')
+    (workspace / 'mago.toml').write_text(f'version = "{args.version.split("-", 1)[0]}"\nphp-version = "8.3.0"\n[source]\npaths = ["probe.php"]\n[analyzer]\ncheck-throws = true\nfind-unused-definitions = false\n')
     result = subprocess.run([
         'php', str(binary), '--threads', '1', 'analyze', '--no-extensions',
         '--throws-only', '--reporting-format', 'json',
@@ -36,4 +36,7 @@ with tempfile.TemporaryDirectory(prefix='mago-composer-install-') as temporary:
     issues = json.loads(result.stdout)['issues']
     assert any(issue['code'] == 'unhandled-thrown-type' and '`probe`' in issue['message'] for issue in issues), issues
     assert (workspace / 'vendor/teletype/mago/schema.json').is_file()
+    subprocess.run([
+        'php', str(binary), 'self-update', '--to-project-version', '--check',
+    ], cwd=workspace, env=environment, check=True)
     print(f'Fresh Composer installation and native throws analysis: passed ({version})')
