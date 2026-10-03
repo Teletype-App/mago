@@ -64,7 +64,10 @@ impl Hash for TUnion {
             .collect::<Vec<_>>();
         hashes.sort_unstable();
         hashes.dedup();
-        hashes.hash(state);
+        hashes.len().hash(state);
+        for hash in hashes {
+            hash.hash(state);
+        }
     }
 }
 
