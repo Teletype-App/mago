@@ -520,26 +520,25 @@ impl ThrowsSummaries {
                 });
             if reverses_previous_round {
                 // New specializations can inherit general effects before their callees are registered.
-                // Recompute the affected dependency closure from empty effects with those keys retained.
+                // Recompute oscillating summaries from empty effects with their keys retained.
                 // Known bodies, external contracts and unresolved calls are analyzed again normally.
-                loop {
-                    let callers = next
-                        .dependencies
-                        .iter()
-                        .filter(|(file, callees)| !work.contains(file) && !callees.is_disjoint(&work))
-                        .map(|(file, _)| *file)
-                        .collect::<Vec<_>>();
-                    if callers.is_empty() {
-                        break;
+                for id in changed_functions.keys() {
+                    if let Some(summary) = next.functions.get_mut(id) {
+                        *summary = FunctionThrowsSummary::default();
                     }
-                    work.extend(callers);
+                }
+                for key in changed_contexts.keys() {
+                    if let Some(summary) = next.contexts.get_mut(key) {
+                        *summary = FunctionThrowsSummary::default();
+                    }
                 }
                 tracing::debug!(
                     round,
                     files = work.len(),
+                    functions = changed_functions.len(),
+                    contexts = changed_contexts.len(),
                     "Recomputing cyclic throws effects from registered contexts"
                 );
-                next.reset_effects(codebase, &work);
                 previous_functions.clear();
                 previous_contexts.clear();
             } else {
