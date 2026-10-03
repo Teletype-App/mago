@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
@@ -45,9 +46,25 @@ impl Hash for TUnion {
     where
         H: Hasher,
     {
-        for t in self.types.as_ref() {
-            t.hash(state);
+        if let [atomic] = self.types.as_ref() {
+            atomic.hash(state);
+            return;
         }
+
+        // Equality compares atomic sets, including unions with different duplicate distributions.
+        // Sort atomic hashes rather than atoms: nested union equality also ignores atom order.
+        let mut hashes = self
+            .types
+            .iter()
+            .map(|atomic| {
+                let mut hasher = DefaultHasher::new();
+                atomic.hash(&mut hasher);
+                hasher.finish()
+            })
+            .collect::<Vec<_>>();
+        hashes.sort_unstable();
+        hashes.dedup();
+        hashes.hash(state);
     }
 }
 
