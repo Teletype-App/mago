@@ -2808,3 +2808,9 @@ fn test_all_test_cases_are_ran() {
         assert!(has_test, "File '{file_name}' was not found as a test case");
     }
 }
+
+test_case!(throws_inferred_chain);
+test_case!(throws_finally);
+test_case!(throws_conditions);
+test_case!(throws_callbacks);
+test_case!(throws_polymorphic);

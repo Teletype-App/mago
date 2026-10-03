@@ -33,6 +33,10 @@
 //! checking even for external symbols. Stubs can be disabled with `--no-stubs`
 //! for debugging or testing purposes.
 
+mod throws_cache;
+mod throws_explain;
+mod throws_selection;
+
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -164,6 +168,26 @@ pub struct AnalyzeCommand {
     #[arg(long, conflicts_with_all = ["path", "list_codes", "watch", "substitutions"])]
     pub staged: bool,
 
+    /// Report and fix only exception contract diagnostics.
+    #[arg(long, conflicts_with_all = ["watch", "list_codes"])]
+    pub throws_only: bool,
+
+    /// Cache inferred exceptions using content hashes and transitive dependencies.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["watch", "stdin_input", "list_codes"])]
+    pub throws_cache: Option<PathBuf>,
+
+    /// Write inferred exception conditions and call origins to a JSON file.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["watch", "stdin_input", "list_codes"])]
+    pub throws_explain: Option<PathBuf>,
+
+    /// Restrict throws reports and PHPDoc edits to declarations changed from this Git revision.
+    #[arg(long, value_name = "REF", conflicts_with_all = ["path", "staged", "watch", "stdin_input", "list_codes", "substitutions"])]
+    pub throws_diff: Option<String>,
+
+    /// Include all declarations in this file when using --throws-diff.
+    #[arg(long, value_name = "PATH", requires = "throws_diff")]
+    pub throws_full_file: Vec<PathBuf>,
+
     /// Read the file content from stdin and use the given path for baseline and reporting.
     ///
     /// Intended for editor integrations: pipe unsaved buffer content and pass the real file path
@@ -217,7 +241,7 @@ impl AnalyzeCommand {
     ///
     /// Only host files are analyzed for issues; external files only contribute to
     /// the symbol table and type graph.
-    pub fn execute(self, configuration: Configuration, color_choice: ColorChoice) -> Result<CommandOutcome, Error> {
+    pub fn execute(self, mut configuration: Configuration, color_choice: ColorChoice) -> Result<CommandOutcome, Error> {
         if !self.only.is_empty() {
             eprintln!("error: the `--only` flag is not available for the analyzer.");
             eprintln!();
@@ -247,6 +271,13 @@ impl AnalyzeCommand {
             return self.run_watch_loop(configuration, color_choice).map(CommandOutcome::from);
         }
 
+        if self.throws_only
+            || self.throws_cache.is_some()
+            || self.throws_diff.is_some()
+            || self.throws_explain.is_some()
+        {
+            configuration.analyzer.check_throws = true;
+        }
         let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
         let command_start = trace_enabled.then(Instant::now);
 
@@ -296,6 +327,7 @@ impl AnalyzeCommand {
             &configuration.analyzer.plugins,
             configuration.analyzer.disable_default_plugins,
         );
+        let has_external_analyzer = external_analyzer.is_some();
         if let Some(external_analyzer) = external_analyzer {
             orchestrator.set_external_analyzer_handle(external_analyzer);
         }
@@ -331,11 +363,67 @@ impl AnalyzeCommand {
         }
 
         let service_run_start = trace_enabled.then(Instant::now);
-        let service = orchestrator.get_analysis_service(database.read_only(), metadata, symbol_references);
+        let selection = self
+            .throws_diff
+            .as_ref()
+            .map(|reference| {
+                throws_selection::ThrowsSelection::load(
+                    &configuration.source.workspace,
+                    reference,
+                    &self.throws_full_file,
+                    &database.read_only(),
+                    orchestrator.config.parser_settings,
+                )
+            })
+            .transpose()?;
+        let cache_configuration = serde_json::to_string(&configuration.analyzer)?;
+        let cache = self.throws_cache.as_ref().filter(|_| !has_external_analyzer).map(|path| {
+            let path = if path.is_absolute() { path.clone() } else { configuration.source.workspace.join(path) };
+            let environment = format!(
+                "{}|{:?}|{:?}|{:?}|{}|{}",
+                env!("CARGO_PKG_VERSION"),
+                configuration.php_version,
+                orchestrator.config.parser_settings,
+                cache_configuration,
+                configuration.analyzer.disable_default_plugins,
+                self.no_stubs
+            );
+            throws_cache::ThrowsCache::new(path, environment, &database.read_only())
+        });
+        if self.throws_cache.is_some() && has_external_analyzer {
+            tracing::warn!("Throws cache is disabled for external analyzer providers.");
+        }
+        let mut service = orchestrator.get_analysis_service(database.read_only(), metadata, symbol_references);
+        if let Some((summaries, affected)) = cache.as_ref().and_then(throws_cache::ThrowsCache::seed) {
+            service = service.with_throws_seed(summaries, affected);
+        }
         let analysis_result = service.run()?;
+        if let (Some(cache), Some(summaries)) = (&cache, &analysis_result.throws_summaries) {
+            cache.save(summaries);
+        }
+        if let (Some(path), Some(summaries)) = (&self.throws_explain, &analysis_result.throws_summaries) {
+            let path = if path.is_absolute() { path.clone() } else { configuration.source.workspace.join(path) };
+            throws_explain::write(&path, summaries, &database.read_only())?;
+        }
         let service_run_duration = service_run_start.map(|s| s.elapsed());
         let report_start = trace_enabled.then(Instant::now);
         let mut issues = analysis_result.issues;
+        if self.throws_only || self.throws_diff.is_some() {
+            issues.filter_retain_codes(
+                &[
+                    "unhandled-thrown-type",
+                    "overly-wide-throws-type",
+                    "unused-throws-type",
+                    "throws-inference-incomplete",
+                    "parse",
+                    "syntax",
+                ]
+                .map(str::to_string),
+            );
+        }
+        if let Some(selection) = &selection {
+            issues = selection.filter(issues);
+        }
         let ignore_set = self.compile_ignore_set(&configuration);
 
         issues.filter_out_ignored(&ignore_set, |file_id| {

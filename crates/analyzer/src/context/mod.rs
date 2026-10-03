@@ -58,6 +58,9 @@ where
     pub(super) external_analysis_session: Option<&'ctx ExternalAnalysisSession>,
     pub(super) additional_symbol_references: Option<&'ctx SymbolReferences>,
     class_initializers: WordMap<WordSet>,
+    pub(crate) throws_summaries: Option<&'ctx crate::throws::ThrowsSummaries>,
+    pub(crate) throws_inference: bool,
+    pub(crate) throws_specialization: Option<&'ctx crate::throws::ThrowsContext>,
 }
 
 impl<'ctx, 'arena, A> Context<'ctx, 'arena, A>
@@ -92,6 +95,9 @@ where
             external_analysis_session,
             additional_symbol_references,
             class_initializers: WordMap::default(),
+            throws_summaries: None,
+            throws_inference: false,
+            throws_specialization: None,
         }
     }
 

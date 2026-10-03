@@ -1174,6 +1174,7 @@ impl IncrementalAnalysisService {
     /// this to answer "what's the type of `$obj` here?".
     #[must_use]
     pub fn analyze_file_with_artifacts(&self, file_id: FileId) -> Option<(IssueCollection, AnalysisArtifacts)> {
+        let throws_summaries = self.infer_throws(&self.codebase).ok()?;
         let external_session = self.plugin_registry.create_external_analysis_session(self.database.files());
         let file = self.database.get(&file_id).ok()?;
 
@@ -1194,6 +1195,9 @@ impl IncrementalAnalysisService {
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
         let mut analyzer =
             Analyzer::new(&arena, &file, &resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
+        if let Some(summaries) = &throws_summaries {
+            analyzer = analyzer.with_throws_summaries(summaries);
+        }
         if let Some(session) = external_session.as_ref() {
             analyzer = analyzer.with_external_analysis_session(session);
         }
@@ -1246,8 +1250,18 @@ impl IncrementalAnalysisService {
         issues.extend(semantics_checker.check(&file, program, &resolved_names));
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
+        let throws_summaries = match self.infer_throws(&self.codebase) {
+            Ok(summaries) => summaries,
+            Err(error) => {
+                issues.push(Issue::error(format!("Throws inference error: {error}")));
+                return issues;
+            }
+        };
         let mut analyzer =
             Analyzer::new(&arena, &file, &resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
+        if let Some(summaries) = &throws_summaries {
+            analyzer = analyzer.with_throws_summaries(summaries);
+        }
         if let Some(session) = external_session.as_ref() {
             analyzer = analyzer.with_external_analysis_session(session);
         }
@@ -1268,6 +1282,29 @@ impl IncrementalAnalysisService {
             );
         }
         issues
+    }
+
+    fn infer_throws(
+        &self,
+        codebase: &CodebaseMetadata,
+    ) -> Result<Option<mago_analyzer::throws::ThrowsSummaries>, OrchestratorError> {
+        if !self.settings.check_throws {
+            return Ok(None);
+        }
+        let files = self
+            .database
+            .files()
+            .filter(|file| file.file_type == FileType::Host)
+            .map(|file| self.database.get(&file.id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let files = files.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+        Ok(Some(mago_analyzer::throws::ThrowsSummaries::infer(
+            &files,
+            codebase,
+            &self.plugin_registry,
+            &self.settings,
+            self.parser_settings,
+        )?))
     }
 
     /// Runs the analyzer on host files.
@@ -1308,7 +1345,9 @@ impl IncrementalAnalysisService {
             .map_err(mago_analyzer::error::AnalysisError::from)?;
         let references_changed = before.references != self.external_symbol_references;
         let external_symbol_references = before.references;
-        let effective_skip_files = if references_changed { HashSet::default() } else { skip_files.clone() };
+        let effective_skip_files =
+            if references_changed || settings.check_throws { HashSet::default() } else { skip_files.clone() };
+        let throws_summaries = self.infer_throws(codebase)?;
         let host_files: Vec<_> = self
             .database
             .files()
@@ -1330,7 +1369,10 @@ impl IncrementalAnalysisService {
         if host_files.is_empty() && effective_skip_files.is_empty() {
             tracing::warn!("No host files found for analysis.");
         }
-        let settings = settings.clone();
+        let mut settings = settings.clone();
+        if settings.check_throws {
+            settings.diff = false;
+        }
         let parser_settings = self.parser_settings;
 
         let results: Vec<(FileId, AnalysisResult, Option<Arc<FileAnalysisSnapshot>>)> = host_files
@@ -1349,6 +1391,9 @@ impl IncrementalAnalysisService {
                 let semantics_checker = SemanticsChecker::new(settings.version);
                 let mut analyzer =
                     Analyzer::new(arena, &source_file, &resolved_names, codebase, plugin_registry, settings.clone());
+                if let Some(summaries) = &throws_summaries {
+                    analyzer = analyzer.with_throws_summaries(summaries);
+                }
                 if let Some(requirements) = node_analysis_requirements.as_ref() {
                     analyzer = analyzer.with_node_analysis_requirements(requirements);
                 }
@@ -1674,6 +1719,53 @@ mod tests {
             "Initial analysis failed when it should have succeeded. Check that the parser and analyzer can handle basic PHP code."
         );
         assert!(service.is_initialized());
+    }
+
+    #[test]
+    fn throws_cross_file_body_change_matches_fresh_and_editor_analysis() {
+        fn service(database: &Database<'_>) -> IncrementalAnalysisService {
+            static PRELUDE: LazyLock<mago_prelude::Prelude> = LazyLock::new(mago_prelude::Prelude::build);
+            IncrementalAnalysisService::new(
+                database.read_only(),
+                PRELUDE.metadata.clone(),
+                PRELUDE.symbol_references.clone(),
+                Settings { check_throws: true, ..Settings::default() },
+                ParserSettings::default(),
+                Arc::clone(&PLUGIN_REGISTRY),
+            )
+        }
+        fn caller_throws(issues: &IssueCollection) -> Vec<String> {
+            issues
+                .iter()
+                .filter(|issue| {
+                    issue.code.as_deref() == Some("unhandled-thrown-type") && issue.message.contains("`caller`")
+                })
+                .map(|issue| issue.message.clone())
+                .collect()
+        }
+        let mut database = make_database(vec![
+            ("src/leaf.php", "<?php function leaf(): void { throw new DomainException(); }"),
+            ("src/caller.php", "<?php function caller(): void { leaf(); }"),
+        ]);
+        let mut incremental = service(&database);
+        let initial = incremental.analyze().unwrap();
+        assert!(caller_throws(&initial.issues)[0].contains("DomainException"));
+        database.update(
+            FileId::new(b"src/leaf.php"),
+            Cow::Borrowed(b"<?php function leaf(): void { throw new LengthException(); }"),
+        );
+        incremental.update_database(database.read_only());
+        let changed = incremental.analyze_incremental(None).unwrap();
+        let fresh = service(&database).analyze().unwrap();
+        assert_eq!(caller_throws(&changed.issues), caller_throws(&fresh.issues));
+        assert!(caller_throws(&changed.issues)[0].contains("LengthException"));
+        let editor = incremental.analyze_file(FileId::new(b"src/caller.php"));
+        assert_eq!(caller_throws(&editor), caller_throws(&fresh.issues));
+        let (editor_artifacts, _) = incremental.analyze_file_with_artifacts(FileId::new(b"src/caller.php")).unwrap();
+        assert_eq!(caller_throws(&editor_artifacts), caller_throws(&fresh.issues));
+        database.update(FileId::new(b"src/leaf.php"), Cow::Borrowed(b"<?php function leaf(): void {}"));
+        incremental.update_database(database.read_only());
+        assert!(caller_throws(&incremental.analyze_incremental(None).unwrap().issues).is_empty());
     }
 
     #[test]

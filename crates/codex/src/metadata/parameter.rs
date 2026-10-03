@@ -14,6 +14,8 @@ use crate::misc::VariableIdentifier;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct FunctionLikeParameterMetadata {
+    /// Whether the declared contract invokes this callback before returning.
+    pub immediately_invoked_callable: bool,
     /// Attributes attached to the parameter declaration.
     pub attributes: Vec<AttributeMetadata>,
 
@@ -76,6 +78,7 @@ impl FunctionLikeParameterMetadata {
     #[must_use]
     pub fn new(name: VariableIdentifier, span: Span, name_span: Span, flags: MetadataFlags) -> Self {
         Self {
+            immediately_invoked_callable: false,
             attributes: Vec::new(),
             name,
             flags,

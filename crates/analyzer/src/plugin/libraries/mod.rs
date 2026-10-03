@@ -4,6 +4,7 @@ pub mod flow_php;
 pub mod psl;
 pub mod psr_container;
 pub mod stdlib;
+pub mod yii2;
 
 use crate::plugin::Plugin;
 
@@ -13,4 +14,5 @@ pub use psr_container::PsrContainerPlugin;
 pub use stdlib::StdlibPlugin;
 
 /// All available analyzer plugins.
-pub static ALL_PLUGINS: &[&dyn Plugin] = &[&StdlibPlugin, &PslPlugin, &FlowPhpPlugin, &PsrContainerPlugin];
+pub static ALL_PLUGINS: &[&dyn Plugin] =
+    &[&StdlibPlugin, &PslPlugin, &FlowPhpPlugin, &PsrContainerPlugin, &yii2::Yii2Plugin];

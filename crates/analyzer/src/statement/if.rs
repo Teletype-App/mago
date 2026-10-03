@@ -78,6 +78,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
         let (if_conditional_scope, applied_block_context) =
             conditional::analyze(context, block_context.clone(), artifacts, &mut if_scope, self.condition, true)?;
         *block_context = applied_block_context;
+        if_scope.throws_else_unreachable =
+            artifacts.get_expression_type(self.condition).is_some_and(|ty| ty.is_always_truthy());
 
         if needs_post_leaving_context {
             if_scope.post_leaving_if_context = Some(block_context.clone());
@@ -585,6 +587,10 @@ where
         .extend(if_block_context.variables_possibly_in_scope.iter().copied());
 
     let old_if_block_context = if_block_context.clone();
+    if_block_context.throws_unreachable |= artifacts
+        .get_expression_type(if_statement.condition)
+        .is_some_and(|ty| ty.is_always_falsy())
+        || reconcilable_if_types.keys().any(|name| if_block_context.locals.get(name).is_some_and(|ty| ty.is_never()));
     let assigned_variable_ids = std::mem::take(&mut if_block_context.assigned_variable_ids);
     let possibly_assigned_variable_ids = std::mem::take(&mut if_block_context.possibly_assigned_variable_ids);
 
@@ -713,11 +719,17 @@ fn analyze_else_if_clause<'ctx, 'ast, 'arena, A>(
 where
     A: Arena,
 {
+    let previous_throws_unreachable = else_block_context.throws_unreachable;
+    else_block_context.throws_unreachable |= if_scope.throws_else_unreachable;
     let (if_conditional_scope, applied_else_block_context) =
         conditional::analyze(context, else_block_context.clone(), artifacts, if_scope, else_if_clause.0, true)?;
     *else_block_context = applied_else_block_context;
 
     let mut else_if_block_context = if_conditional_scope.if_body_context;
+    else_if_block_context.throws_unreachable |= if_scope.throws_else_unreachable;
+    if_scope.throws_else_unreachable |=
+        artifacts.get_expression_type(else_if_clause.0).is_some_and(|ty| ty.is_always_truthy());
+    else_block_context.throws_unreachable = previous_throws_unreachable;
     let mut conditionally_referenced_variable_ids = if_conditional_scope.conditionally_referenced_variable_ids;
     let assigned_in_conditional_variable_ids = if_conditional_scope.assigned_in_conditional_variable_ids;
 
@@ -941,6 +953,11 @@ where
     }
 
     let pre_assigned_variable_ids = std::mem::take(&mut else_if_block_context.assigned_variable_ids);
+    else_if_block_context.throws_unreachable |=
+        artifacts.get_expression_type(else_if_clause.0).is_some_and(|ty| ty.is_always_falsy())
+            || reconcilable_else_if_types
+                .keys()
+                .any(|name| else_if_block_context.locals.get(name).is_some_and(|ty| ty.is_never()));
     let pre_possibly_assigned_variable_ids = std::mem::take(&mut else_if_block_context.possibly_assigned_variable_ids);
 
     analyze_statements(else_if_clause.1, context, &mut else_if_block_context, artifacts)?;
@@ -1067,6 +1084,7 @@ fn analyze_else_statements<'ctx, 'arena, A>(
 where
     A: Arena,
 {
+    else_block_context.throws_unreachable |= if_scope.throws_else_unreachable;
     if else_statements.is_none() && if_scope.negated_clauses.is_empty() && else_block_context.clauses.is_empty() {
         if_scope.final_actions.insert(ControlAction::None);
         if_scope.assigned_variable_ids = None;

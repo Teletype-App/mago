@@ -1511,6 +1511,7 @@ fn enum_instance_union(name: Word) -> TUnion {
 
 fn create_enum_value_parameter(backing_type: TAtomic, enum_method_span: Span) -> FunctionLikeParameterMetadata {
     FunctionLikeParameterMetadata {
+        immediately_invoked_callable: false,
         attributes: vec![],
         name: VariableIdentifier(word("$value")),
         type_declaration_metadata: Some(TypeMetadata::new(

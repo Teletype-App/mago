@@ -82,10 +82,95 @@ where
     clear_object_property_narrowings(context, block_context, invoication, this_variable);
 
     let Some(identifier) = invoication.target.get_function_like_identifier() else {
+        if context.settings.check_throws {
+            block_context.unresolved_throw_calls.insert(invoication.span);
+        }
         return Ok(());
     };
 
+    let summary_identifier = crate::throws::canonical(
+        invoication
+            .target
+            .get_method_context()
+            .and_then(|method| method.declaring_method_id)
+            .map(FunctionLikeIdentifier::from)
+            .unwrap_or(*identifier),
+    );
+    if context.settings.check_throws
+        && let Some(metadata) = context.codebase.get_function_like(&summary_identifier)
+    {
+        artifacts.throws_dependencies.insert(metadata.span.file_id);
+    }
+    let specialization = if context.settings.check_throws {
+        crate::throws::invocation_context(context, invoication, parameters)
+    } else {
+        None
+    };
+    if let Some(specialization) = &specialization {
+        artifacts.throws_context_requests.insert(specialization.clone());
+    }
+    let local_closure = if matches!(summary_identifier, FunctionLikeIdentifier::Closure(_)) {
+        artifacts.inferred_throws.get(&summary_identifier).cloned()
+    } else {
+        None
+    };
+    let inferred = local_closure.as_ref().or_else(|| {
+        context.throws_summaries.and_then(|summaries| {
+            specialization
+                .as_ref()
+                .and_then(|key| summaries.contexts.get(key))
+                .or_else(|| summaries.functions.get(&summary_identifier))
+        })
+    });
+    if context.settings.check_throws
+        && let Some(inferred) = inferred
+    {
+        crate::throws::propagate(
+            context,
+            block_context,
+            artifacts,
+            invoication,
+            inferred,
+            parameters,
+            summary_identifier,
+        );
+        if !inferred.unresolved_calls.is_empty() {
+            block_context.unresolved_throw_calls.insert(invoication.span);
+        }
+    }
+    if context.settings.check_throws
+        && let Some(method) = invoication.target.get_method_context()
+        && method.invocation_kind == crate::invocation::MethodInvocationKind::Instance
+        && !method.class_like_metadata.flags.is_final()
+        && let Some(summaries) = context.throws_summaries
+        && let FunctionLikeIdentifier::Method(_, name) = *identifier
+        && let Some(children) = context.codebase.all_class_like_descendants.get(&method.class_like_metadata.name)
+    {
+        let mut visited = WordSet::default();
+        for child in children {
+            let declaring = context
+                .codebase
+                .get_declaring_method_identifier(&mago_codex::identifier::method::MethodIdentifier::new(*child, name));
+            let child_id = crate::throws::canonical(FunctionLikeIdentifier::from(declaring));
+            if child_id == summary_identifier || !visited.insert(declaring.get_class_name()) {
+                continue;
+            }
+            if let Some(metadata) = context.codebase.get_function_like(&child_id) {
+                artifacts.throws_dependencies.insert(metadata.span.file_id);
+            }
+            if let Some(summary) = summaries.functions.get(&child_id) {
+                crate::throws::propagate(context, block_context, artifacts, invoication, summary, parameters, child_id);
+                if !summary.unresolved_calls.is_empty() {
+                    block_context.unresolved_throw_calls.insert(invoication.span);
+                }
+            }
+        }
+    }
+
     let Some(metadata) = invoication.target.get_function_like_metadata() else {
+        if context.settings.check_throws && inferred.is_none() {
+            block_context.unresolved_throw_calls.insert(invoication.span);
+        }
         return Ok(());
     };
 
@@ -144,10 +229,19 @@ where
     }
 
     if context.settings.check_throws {
-        let thrown_types = context.codebase.get_function_like_thrown_types(
-            invoication.target.get_method_context().map(|context| context.class_like_metadata),
-            metadata,
-        );
+        let use_contract = inferred.is_none()
+            && !context.throws_summaries.is_some_and(|summaries| {
+                summaries.source_files.contains(&metadata.span.file_id)
+                    && !metadata.method_metadata.as_ref().is_some_and(|method| method.is_abstract)
+            });
+        let thrown_types = if use_contract {
+            context.codebase.get_function_like_thrown_types(
+                invoication.target.get_method_context().map(|context| context.class_like_metadata),
+                metadata,
+            )
+        } else {
+            &[]
+        };
 
         for thrown_exception_type in thrown_types {
             let resolved_exception_type = resolve_invocation_type(
@@ -161,11 +255,54 @@ where
             for exception_atomic in resolved_exception_type.types.into_owned() {
                 for exception in exception_atomic.get_all_object_names() {
                     block_context.possibly_thrown_exceptions.entry(exception).or_default().insert(invoication.span);
+                    artifacts
+                        .throw_targets
+                        .entry((exception, invoication.span))
+                        .or_default()
+                        .insert(summary_identifier);
+                    crate::throws::record_throw(artifacts, block_context, exception, invoication.span);
                 }
             }
         }
 
         collect_plugin_throw_types(context, block_context, artifacts, invoication, identifier);
+        crate::throws::callbacks::collect(context, block_context, artifacts, invoication, parameters);
+        if context.plugin_registry.yii2_throws
+            && let Some(summaries) = context.throws_summaries
+        {
+            for target in crate::throws::yii2::targets(context, artifacts, invoication) {
+                let Some(target_metadata) = context.codebase.get_function_like(&target) else {
+                    continue;
+                };
+                artifacts.throws_dependencies.insert(target_metadata.span.file_id);
+                if let Some(summary) = summaries.functions.get(&target) {
+                    for exception in summary.exceptions.keys() {
+                        block_context
+                            .possibly_thrown_exceptions
+                            .entry(*exception)
+                            .or_default()
+                            .insert(invoication.span);
+                        artifacts.throw_targets.entry((*exception, invoication.span)).or_default().insert(target);
+                        crate::throws::record_throw(artifacts, block_context, *exception, invoication.span);
+                    }
+                    if !summary.unresolved_calls.is_empty() {
+                        block_context.unresolved_throw_calls.insert(invoication.span);
+                    }
+                } else if !summaries.source_files.contains(&target_metadata.span.file_id) {
+                    for thrown in &target_metadata.thrown_types {
+                        for atomic in thrown.type_union.types.iter() {
+                            for exception in atomic.get_all_object_names() {
+                                block_context
+                                    .possibly_thrown_exceptions
+                                    .entry(exception)
+                                    .or_default()
+                                    .insert(invoication.span);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if !apply_assertions {
@@ -1525,7 +1662,7 @@ where
 fn collect_plugin_throw_types<'ctx, 'arena, A>(
     context: &Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
-    artifacts: &AnalysisArtifacts,
+    artifacts: &mut AnalysisArtifacts,
     invocation: &Invocation<'ctx, '_, 'arena>,
     identifier: &FunctionLikeIdentifier,
 ) where
@@ -1556,6 +1693,12 @@ fn collect_plugin_throw_types<'ctx, 'arena, A>(
 
     for exception in exceptions {
         block_context.possibly_thrown_exceptions.entry(exception).or_default().insert(invocation.span);
+        artifacts
+            .throw_targets
+            .entry((exception, invocation.span))
+            .or_default()
+            .insert(crate::throws::canonical(*identifier));
+        crate::throws::record_throw(artifacts, block_context, exception, invocation.span);
     }
 }
 

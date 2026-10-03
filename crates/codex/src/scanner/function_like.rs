@@ -672,6 +672,17 @@ fn scan_function_like_docblock<A>(
         }
     }
 
+    for tag in document.tags() {
+        let (parameter, immediate) = match &tag.value {
+            TagValue::ParamImmediatelyInvokedCallable(value) => (value.parameter.value, true),
+            TagValue::ParamLaterInvokedCallable(value) => (value.parameter.value, false),
+            _ => continue,
+        };
+        if let Some(parameter) = metadata.get_parameter_mut(word(parameter)) {
+            parameter.immediately_invoked_callable = immediate;
+        }
+    }
+
     let return_tag = find_most_trusted_tag(&document, |tag| match &tag.value {
         TagValue::Return(return_tag) => Some(*return_tag),
         _ => None,

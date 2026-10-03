@@ -7,5 +7,6 @@
 /vendor/
 .direnv
 .mago/
+/tools/throws/__pycache__/
 /corpus/vendor/
 /corpus/composer.lock

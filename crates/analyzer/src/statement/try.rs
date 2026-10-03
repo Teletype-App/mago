@@ -58,6 +58,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
         }
 
         let existing_thrown_exceptions = std::mem::take(&mut block_context.possibly_thrown_exceptions);
+        let existing_unresolved_calls = std::mem::take(&mut block_context.unresolved_throw_calls);
         let old_block_context_locals = block_context.locals.clone();
         let mut try_block_context = block_context.clone();
 
@@ -171,6 +172,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
         }
 
         try_block_context.possibly_thrown_exceptions = block_context.possibly_thrown_exceptions.clone();
+        try_block_context.unresolved_throw_calls = block_context.unresolved_throw_calls.clone();
         try_block_context.variables_possibly_in_scope = block_context.variables_possibly_in_scope.clone();
 
         let try_leaves_loop = artifacts
@@ -195,6 +197,12 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
             let mut catch_block_context = original_block_context.clone();
             catch_block_context.flags.set_has_returned(false);
             let caught_classes = get_caught_classes(context, &catch_clause.hint);
+            let has_unresolved_try_calls = !original_block_context.unresolved_throw_calls.is_empty();
+            catch_block_context.unresolved_throw_calls.clear();
+            if caught_classes.iter().any(|class| class.as_bytes().eq_ignore_ascii_case(b"Throwable")) {
+                block_context.unresolved_throw_calls.clear();
+                original_block_context.unresolved_throw_calls.clear();
+            }
 
             for (variable_id, variable_type) in &mut catch_block_context.locals {
                 if let Some(old_type) = old_block_context_locals.get(variable_id) {
@@ -251,6 +259,12 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
                         original_block_context.possibly_thrown_exceptions.remove(possibly_thrown_exception);
                         block_context.possibly_thrown_exceptions.remove(possibly_thrown_exception);
                         catch_block_context.possibly_thrown_exceptions.remove(possibly_thrown_exception);
+                    } else if context
+                        .codebase
+                        .is_instance_of(caught_class.as_bytes(), possibly_thrown_exception.as_bytes())
+                    {
+                        // A declared parent type can also hold an instance of the caught subclass.
+                        caught_exception_types.insert(*caught_class);
                     }
                 }
             }
@@ -271,13 +285,23 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
                 }
             }
 
+            catch_block_context.throws_unreachable |=
+                context.throws_summaries.is_some() && caught_exception_types.is_empty() && !has_unresolved_try_calls;
+
             catch_block_context.clauses = vec![];
             if let Some(catch_variable) = catch_clause.variable.as_ref() {
                 let exception_type = TUnion::new(
-                    caught_classes
-                        .iter()
-                        .map(|caught_class| TAtomic::Object(TObject::Named(TNamedObject::new(*caught_class))))
-                        .collect(),
+                    (if context.throws_summaries.is_some()
+                        && !has_unresolved_try_calls
+                        && !caught_exception_types.is_empty()
+                    {
+                        &caught_exception_types
+                    } else {
+                        &caught_classes
+                    })
+                    .iter()
+                    .map(|caught_class| TAtomic::Object(TObject::Named(TNamedObject::new(*caught_class))))
+                    .collect(),
                 );
 
                 let catch_var_name = Word::from(catch_variable.name);
@@ -384,6 +408,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
             finally_block_context.possibly_assigned_variable_ids = WordSet::default();
             finally_block_context.locals = finally_scope.locals;
             finally_block_context.flags.set_has_returned(false);
+            finally_block_context.possibly_thrown_exceptions.clear();
+            finally_block_context.unresolved_throw_calls.clear();
 
             analyze_statements(
                 finally_clause.block.statements.as_slice(),
@@ -393,6 +419,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
             )?;
 
             finally_has_returned = finally_block_context.flags.has_returned();
+            if finally_has_returned {
+                block_context.possibly_thrown_exceptions.clear();
+                block_context.unresolved_throw_calls.clear();
+            }
+            for (exception, spans) in finally_block_context.possibly_thrown_exceptions {
+                block_context.possibly_thrown_exceptions.entry(exception).or_default().extend(spans);
+            }
+            block_context.unresolved_throw_calls.extend(finally_block_context.unresolved_throw_calls);
             block_context.possibly_undefined_variable_ids.extend(finally_block_context.possibly_undefined_variable_ids);
 
             for (variable_id, _) in finally_block_context.assigned_variable_ids {
@@ -421,6 +455,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
         for (possibly_thrown_exception, throw_spans) in existing_thrown_exceptions {
             block_context.possibly_thrown_exceptions.entry(possibly_thrown_exception).or_default().extend(throw_spans);
         }
+        block_context.unresolved_throw_calls.extend(existing_unresolved_calls);
 
         block_context.flags.set_has_returned(if finally_has_returned {
             true

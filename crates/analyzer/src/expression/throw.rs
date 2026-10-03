@@ -2,6 +2,7 @@ use mago_allocator::Arena;
 use std::rc::Rc;
 
 use mago_codex::ttype::TType;
+use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::get_never;
 use mago_reporting::Annotation;
@@ -53,11 +54,22 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Throw<'arena> {
             }
         }
 
+        let mut thrown_names = Vec::new();
         if let Some(exception_type) = artifacts.get_expression_type(self.exception) {
             for exception_atomic in exception_type.types.as_ref() {
                 if exception_atomic.extends_or_implements(context.codebase, b"Throwable") {
-                    for object_name in exception_atomic.get_all_object_names() {
+                    let thrown_types = match exception_atomic {
+                        TAtomic::GenericParameter(parameter) => parameter.constraint.types.as_ref(),
+                        _ => std::slice::from_ref(exception_atomic),
+                    };
+                    for object_name in thrown_types.iter().flat_map(TAtomic::get_all_object_names) {
+                        if !context.codebase.is_instance_of(object_name.as_bytes(), b"Throwable")
+                            && !object_name.as_bytes().eq_ignore_ascii_case(b"Throwable")
+                        {
+                            continue;
+                        }
                         block_context.possibly_thrown_exceptions.entry(object_name).or_default().insert(self.span());
+                        thrown_names.push(object_name);
                     }
                 } else {
                     let exception_atomic_str = exception_atomic.get_id();
@@ -82,6 +94,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Throw<'arena> {
             }
         }
 
+        if context.settings.check_throws {
+            for exception in thrown_names {
+                crate::throws::record_throw(artifacts, block_context, exception, self.span());
+            }
+        }
         artifacts.set_expression_type(self, get_never());
 
         Ok(())

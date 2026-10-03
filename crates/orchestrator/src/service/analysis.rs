@@ -21,6 +21,7 @@ use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings;
 #[cfg(not(target_arch = "wasm32"))]
 use mago_analyzer::telemetry as analyzer_telemetry;
+use mago_analyzer::throws::ThrowsSummaries;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::populator::populate_codebase;
 use mago_codex::reference::SymbolReferences;
@@ -52,11 +53,13 @@ pub struct AnalysisService {
     parser_settings: ParserSettings,
     use_progress_bars: bool,
     plugin_registry: Arc<PluginRegistry>,
+    throws_seed: Option<(ThrowsSummaries, HashSet<FileId>)>,
 }
 
 impl std::fmt::Debug for AnalysisService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AnalysisService")
+            .field("throws_seed", &self.throws_seed.as_ref().map(|(_, files)| files.len()))
             .field("database", &self.database)
             .field("codebase", &self.codebase)
             .field("symbol_references", &self.symbol_references)
@@ -79,7 +82,22 @@ impl AnalysisService {
         use_progress_bars: bool,
         plugin_registry: Arc<PluginRegistry>,
     ) -> Self {
-        Self { database, codebase, symbol_references, settings, parser_settings, use_progress_bars, plugin_registry }
+        Self {
+            database,
+            codebase,
+            symbol_references,
+            settings,
+            parser_settings,
+            use_progress_bars,
+            plugin_registry,
+            throws_seed: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_throws_seed(mut self, summaries: ThrowsSummaries, affected: HashSet<FileId>) -> Self {
+        self.throws_seed = Some((summaries, affected));
+        self
     }
 
     /// Analyzes a single file synchronously without using parallel processing.
@@ -248,6 +266,17 @@ impl AnalysisService {
             self.plugin_registry.external_codebase_scan_plan().map_err(AnalysisError::from)?.map(Arc::new);
         let lifecycle_capabilities = Arc::new(OnceLock::new());
         let additional_symbol_references = Arc::new(OnceLock::new());
+        let throws_summaries = Arc::new(OnceLock::new());
+        let before_throws_summaries = Arc::clone(&throws_summaries);
+        let map_throws_summaries = Arc::clone(&throws_summaries);
+        let throws_files = self
+            .database
+            .files()
+            .filter(|file| file.file_type == mago_database::file::FileType::Host)
+            .collect::<Vec<_>>();
+        let throws_seed = self.throws_seed;
+        let throws_settings = self.settings.clone();
+        let throws_parser_settings = self.parser_settings;
         let reducer = AnalysisResultReducer {
             plugin_registry: Arc::clone(&self.plugin_registry),
             external_session: external_session.clone(),
@@ -285,7 +314,7 @@ impl AnalysisService {
         #[cfg(not(target_arch = "wasm32"))]
         let telemetry_for_closure = Arc::clone(&telemetry);
 
-        let result = pipeline.run(
+        let mut result = pipeline.run(
             move |file, program, resolved_names| {
                 codebase_scan_plan
                     .as_deref()
@@ -310,6 +339,22 @@ impl AnalysisService {
                 let before = before_plugin_registry
                     .run_external_before_analysis_hooks(codebase, before_external_session.as_deref())
                     .map_err(AnalysisError::from)?;
+                if throws_settings.check_throws {
+                    let files = throws_files.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+                    let (seed, affected) = throws_seed
+                        .clone()
+                        .map_or_else(|| (ThrowsSummaries::default(), None), |(seed, affected)| (seed, Some(affected)));
+                    let summaries = ThrowsSummaries::infer_incremental(
+                        &files,
+                        codebase,
+                        &before_plugin_registry,
+                        &throws_settings,
+                        throws_parser_settings,
+                        seed,
+                        affected.as_ref(),
+                    )?;
+                    let _result = before_throws_summaries.set(summaries);
+                }
                 if !before.references.is_empty() {
                     symbol_references.extend(before.references.clone());
                     let _result = before_additional_symbol_references.set(Arc::new(before.references));
@@ -367,6 +412,9 @@ impl AnalysisService {
                 let analyzer_new_start = trace_enabled.then(Instant::now);
                 let mut analyzer =
                     Analyzer::new(arena, &source_file, &resolved_names, &codebase, &plugin_registry, settings);
+                if let Some(summaries) = map_throws_summaries.get() {
+                    analyzer = analyzer.with_throws_summaries(summaries);
+                }
                 if let Some(requirements) = node_analysis_requirements.as_ref() {
                     analyzer = analyzer.with_node_analysis_requirements(requirements);
                 }
@@ -453,6 +501,9 @@ impl AnalysisService {
             analyzer_telemetry::dump_and_reset();
         }
 
+        if let Ok(result) = result.as_mut() {
+            result.throws_summaries = throws_summaries.get().cloned();
+        }
         result
     }
 }

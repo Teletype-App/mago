@@ -1,100 +1,49 @@
-<p align="center">
-  <img src="docs/static/img/banner.svg" alt="Mago Banner" width="600" />
-</p>
+[English](README.md) · [Русский](README-ru.md)
 
-<div align="center">
+# Mago
 
-**An extremely fast PHP linter, formatter, and static analyzer, written in Rust.**
+A fork of [Mago](https://github.com/carthage-software/mago) with native Rust exception analysis and `@throws` PHPDoc maintenance.
 
-</div>
+General tools and configuration are covered by the [upstream documentation](https://mago.carthage.software/latest/en/) and [upstream README](https://github.com/carthage-software/mago/blob/main/README.md).
 
-<div align="center">
+## Fork features
 
-[![CI Status](https://github.com/carthage-software/mago/actions/workflows/ci.yml/badge.svg)](https://github.com/carthage-software/mago/actions/workflows/ci.yml)
-[![CD Status](https://github.com/carthage-software/mago/actions/workflows/cd.yml/badge.svg)](https://github.com/carthage-software/mago/actions/workflows/cd.yml)
-[![CodeQL](https://github.com/carthage-software/mago/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/carthage-software/mago/actions/workflows/github-code-scanning/codeql)
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/carthage-software/mago?utm_source=badge)
-[![Crates.io](https://img.shields.io/crates/v/mago.svg)](https://crates.io/crates/mago)
-[![Latest Stable Version for PHP](https://poser.pugx.org/carthage-software/mago/v)](https://packagist.org/packages/carthage-software/mago)
-[![Total Composer Downloads](http://poser.pugx.org/carthage-software/mago/downloads)](https://packagist.org/packages/carthage-software/mago)
-[![License](https://img.shields.io/crates/l/mago.svg)](https://github.com/carthage-software/mago/blob/main/LICENSE-MIT)
+- Exception inference from function, method and closure bodies, cross-file calls, callbacks and generators.
+- Argument conditions, catch/rethrow/finally and resolvable Yii 2 hooks.
+- Adding, narrowing and removing `@throws` while preserving other PHPDoc content.
+- Persistent caching, Git diff selection for reports and fixes, and exception origin explanations.
 
-</div>
-
-**Mago** is a comprehensive toolchain for PHP that helps developers write better code. Inspired by the Rust ecosystem, Mago brings speed, reliability, and an exceptional developer experience to PHP projects of all sizes.
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Getting Started](#getting-started)
-- [Features](#features)
-- [Our Sponsors](#our-sponsors)
-- [Contributing](#contributing)
-- [Inspiration & Acknowledgements](#inspiration--acknowledgements)
-- [License](#license)
+Regular `analyze` also checks types, methods, properties and other PHP errors.
 
 ## Installation
 
-The most common way to install Mago on macOS and Linux is by using our shell script:
-
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash
+composer config repositories.teletype-mago vcs https://github.com/Teletype-App/mago
+composer require --dev 'teletype/mago:^1.51'
+vendor/bin/mago --version
 ```
 
-To install a specific version:
+The PHP launcher downloads a prebuilt binary from [fork releases](https://github.com/Teletype-App/mago/releases). Composer installation does not require Rust. `composer update teletype/mago` updates the package, while `composer install` follows the lock file. Binaries are available for Linux, macOS and Windows.
 
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash -s -- --version=1.51.0
+## Exception analysis
+
+```toml
+[analyzer]
+check-throws = true
+# plugins = ["yii2"] # For Yii 2 projects
 ```
 
-For all other installation methods, including Homebrew, Composer, and Cargo, please refer to our official **[Installation Guide](https://mago.carthage.software/latest/en/guide/installation/)**.
+```sh
+vendor/bin/mago analyze --throws-only --throws-cache .mago/throws.json
+vendor/bin/mago analyze --throws-only --throws-diff main --fix --potentially-unsafe
+```
 
-## Getting Started
+Replace `main` with your base branch. Git selection limits reports and fixes while the entire configured source set participates in analysis. `--throws-explain` writes JSON explanations. PHPDoc fixes require `--potentially-unsafe`.
 
-To get started with Mago and learn how to configure your project, please visit our **[Getting Started Guide](https://mago.carthage.software/latest/en/guide/getting-started/)** in the official documentation.
+## Limits and maintenance
 
-## Features
+Dynamic calls may remain unresolved. Unknown effects prevent removal or narrowing of existing `@throws` tags. Full Psalm compatibility is not guaranteed.
 
-- ⚡️ Extremely Fast: Built in Rust for maximum performance.
-- 🔍 Lint: Identify issues in your codebase with customizable rules.
-- 🔬 Static Analysis: Perform deep analysis of your codebase to catch potential type errors and bugs.
-- 🛠️ Automated Fixes: Apply fixes for many lint issues automatically.
-- 📜 Formatting: Automatically format your code to adhere to best practices and style guides.
-- 🧠 Semantic Checks: Ensure code correctness with robust semantic analysis.
-- 🌳 CST Visualization: Explore your code’s structure with Concrete Syntax Tree (CST) parsing.
+The `carthage-software/mago` package and upstream installers install upstream. Use `teletype/mago` for this fork. Update Composer-installed binaries through Composer.
 
-## Our Sponsors
-
-<!-- START-SPONSORS -->
-<p align="center"><a href="https://opensource.check24.de/project/mago/" title="CHECK24"><kbd><img src="https://carthage.software/media/01a01a1f-9b15-5cd1-1205-96a7452e17cb" width="120" height="120" alt="CHECK24" /></kbd></a><a href="https://www.jetbrains.com/" title="JetBrains"><kbd><img src="https://avatars.githubusercontent.com/u/60931315?u=f9b545e50cace9e9028f77eaf1e83104d18d4d48&v=4&s=240" width="120" height="120" alt="JetBrains" /></kbd></a></p><p align="center"><a href="https://github.com/jasonrm" title="Jason R. McNeil"><kbd><img src="https://avatars.githubusercontent.com/u/39949?u=69c0e4fb08c439250978d41dbc3371d2f0609b98&v=4&s=160" width="80" height="80" alt="Jason R. McNeil" /></kbd></a><a href="https://ofcompute.rs/" title="Vincent Berset"><kbd><img src="https://avatars.githubusercontent.com/u/5173120?u=95efc76cd8fc804536dc6dd25781a95b650bf902&v=4&s=160" width="80" height="80" alt="Vincent Berset" /></kbd></a></p><p align="center"><a href="https://www.ticketswap.com" title="TicketSwap"><kbd><img src="https://avatars.githubusercontent.com/u/5766233?v=4&s=96" width="48" height="48" alt="TicketSwap" /></kbd></a><a href="https://github.com/kambo-1st" title="Bohuslav Šimek"><kbd><img src="https://avatars.githubusercontent.com/u/6493048?u=5eddf1eb923810745d8bdd62496d245238833d07&v=4&s=96" width="48" height="48" alt="Bohuslav Šimek" /></kbd></a><a href="https://heysora.net/" title="HeySora"><kbd><img src="https://avatars.githubusercontent.com/u/17962248?u=f648cc7bd2aca843662fc8166e206e0b047f075a&v=4&s=96" width="48" height="48" alt="HeySora" /></kbd></a></p>
-
-[See all sponsors](SPONSORS.md)
-<!-- END-SPONSORS -->
-
-## Contributing
-
-Mago is a community-driven project, and we welcome contributions! Whether you're reporting bugs, suggesting features, writing documentation, or submitting code, your help is valued.
-
-- See our [Contributing Guide](./CONTRIBUTING.md) to get started.
-- Join the discussion on [Discord](https://discord.gg/mwyyjr27eu).
-
-## Inspiration & Acknowledgements
-
-Mago stands on the shoulders of giants. Our design and functionality are heavily inspired by pioneering tools in both the Rust and PHP ecosystems.
-
-### Inspirations:
-
-- [Clippy](https://github.com/rust-lang/rust-clippy): For its comprehensive linting approach.
-- [OXC](https://github.com/oxc-project/oxc/): A major inspiration for building a high-performance toolchain in Rust.
-- [Hakana](https://github.com/slackhq/hakana/): For its deep static analysis capabilities.
-
-### Acknowledgements:
-
-We deeply respect the foundational work of tools like [PHP-CS-Fixer](https://github.com/PHP-CS-Fixer/PHP-CS-Fixer), [Psalm](https://github.com/vimeo/psalm), [PHPStan](https://github.com/phpstan/phpstan), and [PHP_CodeSniffer](https://github.com/PHPCSStandards/PHP_CodeSniffer). While Mago aims to offer a unified and faster alternative, these tools paved the way for modern PHP development.
-
-## License
-
-Mago is dual-licensed under your choice of the following:
-
-- MIT License ([LICENSE-MIT](./LICENSE-MIT))
-- Apache License, Version 2.0 ([LICENSE-APACHE](./LICENSE-APACHE))
+Synchronization and release rules: [FORK_SYNC.md](FORK_SYNC.md). Licenses: [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE).

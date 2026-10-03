@@ -15,6 +15,7 @@ use crate::context::scope::control_action::ControlActionSet;
 
 #[derive(Clone, Debug, Default)]
 pub struct IfScope<'ctx> {
+    pub throws_else_unreachable: bool,
     pub new_variables: Option<WordMap<Rc<TUnion>>>,
     pub new_variables_possibly_in_scope: WordSet,
     pub possibly_defined_variable_types: WordMap<Rc<TUnion>>,
@@ -43,6 +44,7 @@ pub struct IfScope<'ctx> {
 impl IfScope<'_> {
     pub fn new() -> Self {
         Self {
+            throws_else_unreachable: false,
             new_variables: None,
             new_variables_possibly_in_scope: WordSet::default(),
             possibly_defined_variable_types: WordMap::default(),

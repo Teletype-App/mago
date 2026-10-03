@@ -1282,6 +1282,9 @@ where
         let is_always_truthy = condition_type.is_some_and(|ct| ct.is_always_truthy());
 
         if is_always_falsy {
+            if !is_do {
+                loop_context.throws_unreachable = true;
+            }
             if let Some(loop_scope) = artifacts.get_loop_scope_mut() {
                 loop_scope.truthy_pre_conditions = false;
                 loop_scope.condition_always_false = true;

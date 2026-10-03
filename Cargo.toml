@@ -262,10 +262,11 @@ mago-linter = { workspace = true, features = ["serde"] }
 mago-names = { workspace = true }
 mago-formatter = { workspace = true, features = ["serde"] }
 mago-text-edit = { workspace = true }
+mago-span = { workspace = true }
 mago-php-version = { workspace = true }
 mago-composer = { workspace = true }
 mago-prelude = { workspace = true, features = ["serde"] }
-mago-analyzer = { workspace = true }
+mago-analyzer = { workspace = true, features = ["serde"] }
 mago-algebra = { workspace = true }
 mago-codex = { workspace = true }
 mago-guard = { workspace = true, features = ["serde"] }
@@ -288,6 +289,8 @@ serde_norway = { workspace = true }
 toml = { workspace = true }
 diffy = { workspace = true }
 tempfile = { workspace = true }
+blake3 = { workspace = true }
+foldhash = { workspace = true }
 tracing-subscriber = { workspace = true }
 indicatif = { workspace = true }
 colored = { workspace = true }

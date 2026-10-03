@@ -260,6 +260,10 @@ where
 
     // Extract function_exists/defined assertions for the "else" branch.
     extract_function_constant_existence(condition, artifacts, &mut else_block_context, true);
+    if_block_context.throws_unreachable |=
+        artifacts.get_expression_type(condition).is_some_and(|ty| ty.is_always_falsy());
+    else_block_context.throws_unreachable |=
+        artifacts.get_expression_type(condition).is_some_and(|ty| ty.is_always_truthy());
 
     let was_inside_general_use = else_block_context.flags.inside_general_use();
     else_block_context.flags.set_inside_general_use(true);

@@ -13,6 +13,7 @@ use crate::statement::class_like::unused_members::find_unused_member_spans;
 #[derive(Clone, Debug)]
 pub struct AnalysisResult {
     pub issues: IssueCollection,
+    pub throws_summaries: Option<crate::throws::ThrowsSummaries>,
     pub symbol_references: SymbolReferences,
     deferred_pragmas: Vec<DeferredPragmas>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -24,6 +25,7 @@ impl AnalysisResult {
     pub fn new(symbol_references: SymbolReferences) -> Self {
         Self {
             issues: IssueCollection::default(),
+            throws_summaries: None,
             symbol_references,
             deferred_pragmas: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]

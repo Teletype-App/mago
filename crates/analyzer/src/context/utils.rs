@@ -87,7 +87,8 @@ pub(crate) fn inherit_branch_context_properties<'ctx, A>(
         }
     }
 
-    if context.settings.check_throws {
+    if context.settings.check_throws && !source_context.throws_unreachable {
+        destination_context.unresolved_throw_calls.extend(&source_context.unresolved_throw_calls);
         for (exception, spans) in &source_context.possibly_thrown_exceptions {
             destination_context.possibly_thrown_exceptions.entry(*exception).or_default().extend(spans);
         }

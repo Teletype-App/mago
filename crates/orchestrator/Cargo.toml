@@ -33,3 +33,6 @@ tracing = { workspace = true }
 indicatif = { workspace = true }
 rayon = { workspace = true }
 xxhash-rust = { workspace = true }
+
+[dev-dependencies]
+mago-prelude = { workspace = true, features = ["build"] }

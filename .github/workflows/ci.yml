@@ -2,7 +2,7 @@ name: Continuous Integration
 
 on:
   push:
-    branches: [main]
+    branches: [main, teletype]
   pull_request:
 
 jobs:
@@ -84,6 +84,10 @@ jobs:
       - name: cargo build
         if: matrix.rust == 'stable'
         run: cargo build --release --locked
+
+      - name: Native throws CLI scenarios
+        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
+        run: python3 tools/throws/test_cli.py --mago ./target/release/mago
 
       - name: Validate composer code format
         if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'

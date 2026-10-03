@@ -102,6 +102,7 @@ where
 
 #[derive(Default)]
 pub struct PluginRegistry {
+    pub(crate) yii2_throws: bool,
     external_analyzer: Option<Arc<ExternalAnalyzerHandle>>,
     external_capabilities: OnceLock<ExternalAnalyzerCapabilities>,
     function_exact: WordMap<Vec<usize>>,

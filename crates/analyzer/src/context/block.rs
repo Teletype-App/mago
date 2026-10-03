@@ -99,6 +99,8 @@ pub struct BlockContext<'ctx> {
     pub loop_bounds: (u32, u32),
     pub if_body_context: Option<Rc<RefCell<Self>>>,
     pub control_actions: ControlActionSet,
+    pub unresolved_throw_calls: HashSet<Span>,
+    pub throws_unreachable: bool,
     pub possibly_thrown_exceptions: WordMap<HashSet<Span>>,
 
     /// Properties that are DEFINITELY initialized in ALL code paths.
@@ -224,6 +226,8 @@ impl<'ctx> BlockContext<'ctx> {
             loop_bounds: (0, 0),
             if_body_context: None,
             control_actions: ControlActionSet::new(),
+            unresolved_throw_calls: HashSet::default(),
+            throws_unreachable: false,
             possibly_thrown_exceptions: WordMap::default(),
             definitely_initialized_properties: WordSet::default(),
             possibly_initialized_properties: WordSet::default(),

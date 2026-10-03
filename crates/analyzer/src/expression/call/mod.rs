@@ -135,6 +135,14 @@ fn analyze_invocation_targets<'ctx, 'ast, 'arena, A>(
 where
     A: Arena,
 {
+    if context.settings.check_throws
+        && (encountered_invalid_targets
+            || encountered_mixed_targets
+            || (invocation_targets.is_empty() && !should_add_null && !object_has_nullsafe_null))
+    {
+        block_context.unresolved_throw_calls.insert(call_span);
+    }
+
     let method_name_for_assertions: Option<Word> = invocation_targets.iter().find_map(|target| {
         if let InvocationTarget::FunctionLike {
             identifier: FunctionLikeIdentifier::Method(_, _),

@@ -12,7 +12,11 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+serde = ["dep:serde", "mago-codex/serde", "mago-database/serde", "mago-span/serde", "mago-word/serde"]
+
 [dependencies]
+serde = { workspace = true, optional = true }
 mago-codex = { workspace = true }
 mago-reporting = { workspace = true }
 mago-text-edit = { workspace = true }

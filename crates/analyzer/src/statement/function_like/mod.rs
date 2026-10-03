@@ -232,6 +232,14 @@ where
         }
     }
 
+    let inferred_parameter_types = if let Some(specialization) = context.throws_specialization
+        && block_context.scope.get_function_like_identifier().map(crate::throws::canonical)
+            == Some(specialization.function)
+    {
+        Some(specialization.arguments.iter().cloned().collect())
+    } else {
+        inferred_parameter_types
+    };
     add_parameter_types_to_context(
         context,
         block_context,
@@ -240,6 +248,8 @@ where
         parameter_list,
         inferred_parameter_types,
     )?;
+
+    artifacts.throw_parameter_versions = block_context.assigned_variable_ids.clone();
 
     if !block_context.scope.is_static()
         && let Some(class_like_metadata) = block_context.scope.get_class_like()
@@ -341,11 +351,22 @@ where
 
     check_return_type_width(context, block_context, &mut artifacts, function_like_metadata);
     check_thrown_types(context, block_context, &mut artifacts, function_like_metadata);
+    if context.settings.check_throws
+        && let Some(identifier) = block_context.scope.get_function_like_identifier()
+    {
+        artifacts.inferred_throws.insert(
+            crate::throws::canonical(identifier),
+            crate::throws::FunctionThrowsSummary::collect(block_context, &artifacts),
+        );
+    }
 
     std::mem::swap(&mut context.type_resolution_context, &mut previous_type_resolution_context);
     parent_artifacts.expression_types.extend(std::mem::take(&mut artifacts.expression_types));
     parent_artifacts.variable_definedness.extend(std::mem::take(&mut artifacts.variable_definedness));
     parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
+    parent_artifacts.throws_dependencies.extend(std::mem::take(&mut artifacts.throws_dependencies));
+    parent_artifacts.throws_context_requests.extend(std::mem::take(&mut artifacts.throws_context_requests));
+    parent_artifacts.inferred_throws.extend(std::mem::take(&mut artifacts.inferred_throws));
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
     parent_artifacts.pending_readonly_property_writes.append(&mut artifacts.pending_readonly_property_writes);
 
@@ -492,7 +513,13 @@ where
             !union.is_vanilla_array() && !union.is_vanilla_mixed()
         });
 
-        let mut final_parameter_type = if declared_type_is_specific {
+        let mut final_parameter_type = if let Some(specialization) = context.throws_specialization
+            && block_context.scope.get_function_like_identifier().map(crate::throws::canonical)
+                == Some(specialization.function)
+            && let Some((_, actual)) = specialization.arguments.iter().find(|(index, _)| *index == i)
+        {
+            actual.clone()
+        } else if declared_type_is_specific {
             declared_parameter_type
         } else if let Some(inferred_map) = inferred_parameter_types.as_mut()
             && let Some(inferred_type) = inferred_map.remove(&i)
@@ -1186,13 +1213,8 @@ fn check_thrown_types<'ctx, A>(
 ) where
     A: Arena,
 {
-    if !context.settings.check_throws {
+    if !context.settings.check_throws || context.throws_inference {
         // If the setting is disabled, we skip the check.
-        return;
-    }
-
-    if block_context.possibly_thrown_exceptions.is_empty() {
-        // No exceptions are thrown in this block, so we can skip the check.
         return;
     }
 
@@ -1214,8 +1236,22 @@ fn check_thrown_types<'ctx, A>(
         .codebase
         .get_function_like_thrown_types(block_context.scope.get_class_like(), function_like_metadata)
         .iter()
-        .map(|thrown_type| expand_type_metadata(context, block_context, artifacts, function_like_metadata, thrown_type))
+        .map(|thrown_type| {
+            (
+                thrown_type.span,
+                expand_type_metadata(context, block_context, artifacts, function_like_metadata, thrown_type),
+            )
+        })
         .collect::<Vec<_>>();
+    let mut actual = block_context.possibly_thrown_exceptions.keys().copied().collect::<Vec<_>>();
+    actual.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    let mut changes = crate::throws::docblock::prepare(
+        context,
+        block_context,
+        function_like_metadata,
+        &actual,
+        &expected_throw_types,
+    );
 
     for (thrown_type, thrown_spans) in &block_context.possibly_thrown_exceptions {
         // Skip if exception is in unchecked lists
@@ -1226,7 +1262,7 @@ fn check_thrown_types<'ctx, A>(
         let thrown_type_union = TUnion::from_atomic(TAtomic::Object(TObject::new_named(*thrown_type)));
 
         let mut is_expected = false;
-        for expected_type in &expected_throw_types {
+        for (_, expected_type) in &expected_throw_types {
             if union_comparator::is_contained_by(
                 context.codebase,
                 &thrown_type_union,
@@ -1263,7 +1299,12 @@ fn check_thrown_types<'ctx, A>(
                 "You can add `@throws {thrown_type}` to the {function_kind}'s docblock or wrap the throwing code in a `try-catch` block."
             ));
 
-        context.collector.report_with_code(IssueCode::UnhandledThrownType, issue);
+        let edits = std::mem::take(&mut changes.edits);
+        context.collector.propose_with_code(IssueCode::UnhandledThrownType, issue, |proposed| proposed.extend(edits));
+    }
+    for (code, issue) in changes.issues {
+        let edits = std::mem::take(&mut changes.edits);
+        context.collector.propose_with_code(code, issue, |proposed| proposed.extend(edits));
     }
 }
 
@@ -1272,7 +1313,7 @@ fn check_thrown_types<'ctx, A>(
 /// Returns `true` if the exception is:
 /// - In `unchecked_exception_classes` (exact match only)
 /// - In `unchecked_exceptions` or is a subclass of any exception in that set (hierarchy-aware)
-fn is_exception_unchecked<A>(context: &Context<'_, '_, A>, exception_name: Word) -> bool
+pub(crate) fn is_exception_unchecked<A>(context: &Context<'_, '_, A>, exception_name: Word) -> bool
 where
     A: Arena,
 {

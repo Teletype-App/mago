@@ -43,6 +43,7 @@ pub mod plugin;
 pub mod settings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod telemetry;
+pub mod throws;
 
 mod analyzable;
 mod assertion;
@@ -75,6 +76,9 @@ where
     pub additional_symbol_references: Option<&'ctx SymbolReferences>,
     variable_definedness_targets: Option<Arc<[bool; u8::MAX as usize + 1]>>,
     defer_pragmas: bool,
+    throws_summaries: Option<&'ctx throws::ThrowsSummaries>,
+    throws_inference: bool,
+    pub(crate) throws_specialization: Option<&'ctx throws::ThrowsContext>,
 }
 
 impl<'ctx, 'ast, 'arena, A> Analyzer<'ctx, 'ast, 'arena, A>
@@ -100,7 +104,22 @@ where
             additional_symbol_references: None,
             variable_definedness_targets: None,
             defer_pragmas: false,
+            throws_summaries: None,
+            throws_inference: false,
+            throws_specialization: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_throws_summaries(mut self, summaries: &'ctx throws::ThrowsSummaries) -> Self {
+        self.throws_summaries = Some(summaries);
+        self
+    }
+
+    #[must_use]
+    pub fn with_throws_inference(mut self) -> Self {
+        self.throws_inference = true;
+        self
     }
 
     #[must_use]
@@ -155,6 +174,31 @@ where
         program: &'ast Program<'arena>,
         analysis_result: &mut AnalysisResult,
     ) -> Result<AnalysisArtifacts, AnalysisError> {
+        if self.settings.check_throws && self.throws_summaries.is_none() {
+            let summaries = throws::ThrowsSummaries::infer(
+                &[self.source_file],
+                self.codebase,
+                self.plugin_registry,
+                &self.settings,
+                mago_syntax::settings::ParserSettings::default(),
+            )?;
+            let analyzer = Analyzer {
+                arena: self.arena,
+                source_file: self.source_file,
+                resolved_names: self.resolved_names,
+                codebase: self.codebase,
+                settings: self.settings.clone(),
+                plugin_registry: self.plugin_registry,
+                external_analysis_session: self.external_analysis_session,
+                additional_symbol_references: self.additional_symbol_references,
+                variable_definedness_targets: self.variable_definedness_targets.clone(),
+                defer_pragmas: self.defer_pragmas,
+                throws_summaries: Some(&summaries),
+                throws_inference: false,
+                throws_specialization: self.throws_specialization,
+            };
+            return analyzer.analyze_with_artifacts(program, analysis_result);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let start_time = std::time::Instant::now();
 
@@ -194,6 +238,9 @@ where
             self.external_analysis_session,
             self.additional_symbol_references,
         );
+        context.throws_summaries = self.throws_summaries;
+        context.throws_inference = self.throws_inference;
+        context.throws_specialization = self.throws_specialization;
 
         let mut block_context = BlockContext::new(
             ScopeContext::new(ReferenceOrigin::File(word(context.source_file.name.as_ref()))),

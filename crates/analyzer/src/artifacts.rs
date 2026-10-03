@@ -50,6 +50,16 @@ pub struct ResolvedMethodCall {
 
 #[derive(Debug, Clone)]
 pub struct AnalysisArtifacts {
+    pub(crate) throws_context_requests: HashSet<crate::throws::ThrowsContext>,
+    pub(crate) throw_conditions: HashMap<(Word, Span), Vec<crate::throws::ThrowCondition>>,
+    pub(crate) throw_targets: HashMap<
+        (Word, Span),
+        std::collections::BTreeSet<mago_codex::identifier::function_like::FunctionLikeIdentifier>,
+    >,
+    pub(crate) throw_parameter_versions: WordMap<u32>,
+    pub throws_dependencies: HashSet<mago_database::file::FileId>,
+    pub inferred_throws:
+        HashMap<mago_codex::identifier::function_like::FunctionLikeIdentifier, crate::throws::FunctionThrowsSummary>,
     pub expression_types: HashMap<(u32, u32), Rc<TUnion>>,
     pub if_true_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub if_false_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
@@ -84,6 +94,12 @@ impl AnalysisArtifacts {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            throws_context_requests: HashSet::default(),
+            throw_conditions: HashMap::default(),
+            throw_targets: HashMap::default(),
+            throw_parameter_versions: WordMap::default(),
+            throws_dependencies: HashSet::default(),
+            inferred_throws: HashMap::default(),
             expression_types: HashMap::default(),
             inferred_return_types: Vec::new(),
             inferred_yield_key_types: Vec::new(),

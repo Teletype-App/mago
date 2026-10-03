@@ -1382,6 +1382,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "mago"
 version = "1.51.0"
 dependencies = [
+ "blake3",
  "clap",
  "clap_complete",
  "colored 3.1.1",
@@ -1389,6 +1390,7 @@ dependencies = [
  "dialoguer",
  "diffy",
  "flate2",
+ "foldhash",
  "indicatif",
  "indoc",
  "libc",
@@ -1409,6 +1411,7 @@ dependencies = [
  "mago-php-version",
  "mago-prelude",
  "mago-reporting",
+ "mago-span",
  "mago-syntax",
  "mago-syntax-core",
  "mago-text-edit",
@@ -1489,6 +1492,7 @@ dependencies = [
  "memchr",
  "regex",
  "ryu",
+ "serde",
  "tracing",
 ]
 
@@ -1747,6 +1751,7 @@ dependencies = [
  "mago-linter",
  "mago-names",
  "mago-php-version",
+ "mago-prelude",
  "mago-reporting",
  "mago-semantics",
  "mago-syntax",
