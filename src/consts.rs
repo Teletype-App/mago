@@ -16,14 +16,6 @@ pub const SUPPORTED_TARGETS: &[&str] = &[
     "aarch64-unknown-linux-musl",
     "x86_64-unknown-linux-gnu",
     "x86_64-unknown-linux-musl",
-    "x86_64-pc-windows-gnu",
-    "x86_64-unknown-freebsd",
-    "arm-unknown-linux-gnueabi",
-    "arm-unknown-linux-gnueabihf",
-    "arm-unknown-linux-musleabi",
-    "arm-unknown-linux-musleabihf",
-    "armv7-unknown-linux-gnueabihf",
-    "armv7-unknown-linux-musleabihf",
 ];
 
 /// The current version of mago.
@@ -45,13 +37,13 @@ pub const ARCHIVE_EXTENSION: &str = "tar.gz";
 pub const PHP_EXTENSION: &str = "php";
 
 /// The name of the repository owner.
-pub const REPO_OWNER: &str = "carthage-software";
+pub const REPO_OWNER: &str = "Teletype-App";
 
 /// The name of the repository.
 pub const REPO_NAME: &str = "mago";
 
 /// The URL for creating new issues.
-pub const ISSUE_URL: &str = "https://github.com/carthage-software/mago/issues/new";
+pub const ISSUE_URL: &str = "https://github.com/Teletype-App/mago/issues/new";
 
 /// The name of the environment variable prefix for mago.
 pub const ENVIRONMENT_PREFIX: &str = "MAGO";

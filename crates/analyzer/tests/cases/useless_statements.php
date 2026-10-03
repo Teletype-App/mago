@@ -12,6 +12,7 @@ namespace Fixture {
     /**
      * @pure
      *
+     * @mago-expect analysis:unused-throws-type
      * @throws SomeException
      */
     function pure_function_throws(): int

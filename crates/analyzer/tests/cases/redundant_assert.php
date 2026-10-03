@@ -34,6 +34,7 @@ function process_value(null|int $value): int
 
 /**
  * @throws InvalidArgumentException
+ * @mago-expect analysis:unused-throws-type
  */
 function other(): void
 {

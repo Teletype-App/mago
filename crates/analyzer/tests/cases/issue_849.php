@@ -47,6 +47,7 @@ function truthy_or_null(mixed $value): mixed
  * @param  TParams ...$parameters
  * @return TValue
  *
+ * @mago-expect analysis:unused-throws-type
  * @throws TException
  */
 function throw_if(
@@ -54,12 +55,12 @@ function throw_if(
     Closure|Throwable|string $exception = RuntimeException::class,
     mixed ...$parameters,
 ): mixed {
-    // @mago-expect analysis:unhandled-thrown-type
     return throw_if($condition, $exception, ...$parameters);
 }
 
 /**
  * @throws RuntimeException
+ * @mago-expect analysis:unused-throws-type
  */
 function example(): void
 {

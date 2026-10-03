@@ -67,6 +67,7 @@ class Stack1346
  * @param TNode $start
  *
  * @return list<TNode>
+ * @mago-expect analysis:unhandled-thrown-type
  */
 function dfs1346(mixed $start): array
 {

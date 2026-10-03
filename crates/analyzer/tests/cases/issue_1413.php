@@ -5,6 +5,7 @@ declare(strict_types=1);
 trait RestrictionTrait
 {
     /**
+     * @mago-expect analysis:throws-inference-incomplete
      * @throws LogicException
      */
     public function assertNotRestricted(string $type): int

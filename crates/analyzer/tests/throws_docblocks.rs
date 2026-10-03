@@ -70,6 +70,12 @@ fn removal_preserves_descriptions_and_non_throws_tags() {
     assert_eq!(fix(source), source.replace("@throws RuntimeException ", ""));
     let without_description = source.replace("RuntimeException Historical explanation.", "RuntimeException");
     assert_eq!(fix(&without_description), without_description.replace(" * @throws RuntimeException\n", ""));
+    let inherited = "<?php
+interface Contract { /** @throws RuntimeException */ public function run(): void; }
+final class Worker implements Contract { public function run(): void {} }
+";
+    assert!(analyze(inherited).is_empty());
+    assert_eq!(fix(inherited), inherited);
 }
 
 #[test]
@@ -127,6 +133,17 @@ function live(): void { do { throw new DomainException(); } while (false); }
 ";
     assert!(missing_for(source, "dead").is_empty());
     assert!(missing_for(source, "live")[0].contains("DomainException"));
+}
+
+#[test]
+fn throwing_match_arms_propagate_to_callers_and_can_be_caught() {
+    let source = "<?php
+function leaf(bool $raise): int { return match ($raise) { true => throw new DomainException(), false => 1 }; }
+function caller(): void { leaf(true); }
+function caught(): void { try { leaf(true); } catch (DomainException) {} }
+";
+    assert!(missing_for(source, "caller")[0].contains("DomainException"));
+    assert!(missing_for(source, "caught").is_empty());
 }
 
 #[test]
@@ -198,6 +215,16 @@ function generic(Exception $error): void { throw $error; }
     assert!(intersection[0].contains("Exception"));
     assert!(!intersection[0].contains("Countable"));
     assert!(missing_for(source, "generic")[0].contains("Exception"));
+    let assertion = "<?php
+/**
+ * @template T
+ * @param class-string<T> $class
+ */
+function ensure(object $value, string $class): void {
+    if (!$value instanceof $class) { throw new DomainException(); }
+}
+";
+    assert!(missing_for(assertion, "ensure")[0].contains("DomainException"));
 }
 
 #[test]
@@ -234,6 +261,15 @@ function unresolved(object $service): void { $service->send(); }
     assert!(issues.iter().any(|issue| issue.code.as_deref() == Some("throws-inference-incomplete")));
     assert!(!issues.iter().any(|issue| issue.code.as_deref() == Some("unused-throws-type")));
     assert_eq!(fix(source), source);
+    let abstract_method = "<?php
+interface Service { public function send(): void; }
+/** @throws RuntimeException */
+function unresolved(Service $service): void { $service->send(); }
+";
+    let issues = analyze(abstract_method);
+    assert!(issues.iter().any(|issue| issue.code.as_deref() == Some("throws-inference-incomplete")));
+    assert!(!issues.iter().any(|issue| issue.code.as_deref() == Some("unused-throws-type")));
+    assert_eq!(fix(abstract_method), abstract_method);
     let nullsafe = "<?php
 /** @throws RuntimeException */
 function nullsafe(): void { $service = null; $service?->send(); }

@@ -1,5 +1,5 @@
 {
-  "name": "carthage-software/mago",
+  "name": "teletype/mago",
   "description": "Mago is a toolchain for PHP that aims to provide a set of tools to help developers write better code.",
   "type": "library",
   "license": "MIT OR Apache-2.0",
@@ -15,6 +15,12 @@
   "bin": [
     "composer/bin/mago"
   ],
+  "extra": {
+    "mago-binary-version": "1.51.1+teletype.1"
+  },
+  "replace": {
+    "carthage-software/mago": "self.version"
+  },
   "autoload": {
     "psr-4": {
       "Mago\\": "composer/src/"

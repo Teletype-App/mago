@@ -6,6 +6,7 @@ declare(strict_types=1);
 namespace Mago\Internal;
 
 use Composer;
+use JsonException;
 use RuntimeException;
 
 use function array_shift;
@@ -53,7 +54,7 @@ use const STDERR;
         array_shift($args);
 
         namespace\execute($executable, $args);
-    } catch (RuntimeException $e) {
+    } catch (RuntimeException|JsonException $e) {
         fwrite(STDERR, "Error: {$e->getMessage()}\n");
         exit(1);
     }

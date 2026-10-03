@@ -64,8 +64,21 @@ where
         .collect::<Vec<_>>();
     let mut changes = DocblockChanges { edits: Vec::new(), issues: Vec::new() };
     let mut replacements = Vec::<(Span, String)>::new();
+    let mut documents = PrecedingDocblocks::new(context.comments, metadata.span.start.offset).collect::<Vec<_>>();
+    documents.reverse();
+    let own_thrown_types = metadata
+        .thrown_types
+        .iter()
+        .filter(|declared| {
+            documents.iter().any(|comment| {
+                comment.span.file_id == declared.span.file_id
+                    && comment.span.start.offset <= declared.span.start.offset
+                    && comment.span.end.offset >= declared.span.end.offset
+            })
+        })
+        .collect::<Vec<_>>();
     if complete {
-        for declared in &metadata.thrown_types {
+        for declared in &own_thrown_types {
             let Some((_, expanded)) = expected.iter().find(|(span, _)| *span == declared.span) else {
                 continue;
             };
@@ -124,7 +137,7 @@ where
             ));
         }
     }
-    if !complete && !metadata.thrown_types.is_empty() {
+    if !complete && !own_thrown_types.is_empty() {
         let mut issue = Issue::warning("Exception inference is incomplete. Existing @throws tags will be preserved.")
             .with_annotation(Annotation::primary(metadata.name_span.unwrap_or(metadata.span)))
             .with_note("A call target could not be resolved from the available source and types.");
@@ -137,8 +150,6 @@ where
         return changes;
     }
 
-    let mut documents = PrecedingDocblocks::new(context.comments, metadata.span.start.offset).collect::<Vec<_>>();
-    documents.reverse();
     let mut added = false;
     for (index, comment) in documents.iter().enumerate() {
         let document = PHPDocParser::parse_with_span(context.arena, comment.value, comment.span);

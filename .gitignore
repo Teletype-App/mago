@@ -3,6 +3,7 @@
 */node_modules
 /crates/wasm/pkg
 /target
+/dist/
 /crates/*/target
 /vendor/
 .direnv

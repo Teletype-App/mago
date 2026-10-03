@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Mago\Internal;
 
-use Composer\InstalledVersions;
 use PharData;
 use RuntimeException;
 use Throwable;
@@ -33,6 +32,7 @@ use function ini_get;
 use function is_dir;
 use function is_resource;
 use function is_string;
+use function json_decode;
 use function mkdir;
 use function number_format;
 use function php_uname;
@@ -56,6 +56,7 @@ use const CURLOPT_HTTPHEADER;
 use const CURLOPT_NOPROGRESS;
 use const CURLOPT_PROGRESSFUNCTION;
 use const CURLOPT_USERAGENT;
+use const JSON_THROW_ON_ERROR;
 use const LOCK_EX;
 use const LOCK_UN;
 use const STDERR;
@@ -98,19 +99,27 @@ function locked(string $lockFile, \Closure $callback): mixed
 }
 
 /**
- * Get the installed mago version from Composer metadata.
+ * Get the binary release pinned by this package, including development installs.
  *
  * @throws RuntimeException If the version cannot be determined.
+ * @throws \JsonException If the package metadata is invalid.
  *
- * @return string The package version (e.g., "1.10.0").
+ * @return string The pinned binary release (e.g., "1.51.1+teletype.1").
  *
  * @internal
  */
 function get_version(): string
 {
-    $version = InstalledVersions::getPrettyVersion('carthage-software/mago');
-    if ($version === null) {
-        throw new RuntimeException('Could not determine mago package version.');
+    $contents = file_get_contents(__DIR__ . '/../../composer.json');
+    if ($contents === false) {
+        throw new RuntimeException('Could not read mago package metadata.');
+    }
+
+    /** @var array{extra?: array{mago-binary-version?: string}} $metadata */
+    $metadata = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+    $version = $metadata['extra']['mago-binary-version'] ?? null;
+    if ($version === null || $version === '') {
+        throw new RuntimeException('Could not determine the pinned mago binary version.');
     }
 
     return $version;
@@ -120,7 +129,7 @@ function get_version(): string
  * Detect the CPU architecture from the system.
  *
  * Maps the raw `php_uname('m')` value to a normalized Rust target architecture name.
- * Only architectures with pre-built release binaries are supported.
+ * Platform detection checks which normalized architectures have release binaries.
  *
  * Supported: x86_64, aarch64, armv7, arm (v5/v6).
  *
@@ -140,8 +149,8 @@ function detect_architecture(): string
         'armv7l' => 'armv7',
         'armv6l', 'armv5tel', 'armv5l' => 'arm',
         default => throw new RuntimeException(
-            "Unsupported architecture: {$raw}. Pre-built binaries are available for x86_64, aarch64, armv7, and arm. "
-            . 'For other architectures, compile mago from source: https://github.com/carthage-software/mago',
+            "Unsupported architecture: {$raw}. Pre-built binaries are available for x86_64 and aarch64. "
+            . 'For other architectures, compile mago from source: https://github.com/Teletype-App/mago',
         ),
     };
 }
@@ -237,8 +246,7 @@ function build_linux_suffix(string $architecture, string $libc): string
  * Released OS targets:
  *   Windows: x86_64 only (msvc)
  *   macOS:   x86_64, aarch64
- *   Linux:   x86_64, aarch64, armv7, arm
- *   FreeBSD: x86_64 only
+ *   Linux:   x86_64, aarch64
  *
  * @param string $architecture Normalized architecture name.
  *
@@ -279,26 +287,20 @@ function detect_platform(string $architecture): array
                 "No pre-built macOS binary for architecture: {$architecture}. Only x86_64 and aarch64 are supported.",
             ),
         },
-        'linux' => [
-            'os' => 'linux',
-            'vendor' => 'unknown',
-            'suffix' => namespace\build_linux_suffix($architecture, namespace\detect_linux_libc()),
-            'extension' => '',
-        ],
-        'freebsd' => match ($architecture) {
-            'x86_64' => [
-                'os' => 'freebsd',
+        'linux' => match ($architecture) {
+            'x86_64', 'aarch64' => [
+                'os' => 'linux',
                 'vendor' => 'unknown',
-                'suffix' => '',
+                'suffix' => namespace\build_linux_suffix($architecture, namespace\detect_linux_libc()),
                 'extension' => '',
             ],
             default => throw new RuntimeException(
-                "No pre-built FreeBSD binary for architecture: {$architecture}. Only x86_64 is supported.",
+                "No pre-built Linux binary for architecture: {$architecture}. Only x86_64 and aarch64 are supported.",
             ),
         },
         default => throw new RuntimeException(
-            "Unsupported operating system: {$os}. Pre-built binaries are available for Windows, macOS, Linux, and FreeBSD. "
-            . 'For other platforms, compile mago from source: https://github.com/carthage-software/mago',
+            "Unsupported operating system: {$os}. Pre-built binaries are available for Windows, macOS, and Linux. "
+            . 'For other platforms, compile mago from source: https://github.com/Teletype-App/mago',
         ),
     };
 }
@@ -351,7 +353,7 @@ function get_archive_extension(string $os, string $suffix): string
  */
 function build_download_url(string $version, string $storageDir, string $archiveExtension): string
 {
-    return "https://github.com/carthage-software/mago/releases/download/{$version}/{$storageDir}{$archiveExtension}";
+    return "https://github.com/Teletype-App/mago/releases/download/{$version}/{$storageDir}{$archiveExtension}";
 }
 
 /**
@@ -596,11 +598,11 @@ function ensure_binary(
 /**
  * Ensure the editor JSON schema is available next to the package.
  *
- * Writes `schema.json` to the package root (`vendor/carthage-software/mago/schema.json`
+ * Writes `schema.json` to the package root (`vendor/teletype/mago/schema.json`
  * once installed) so a project can reference a local, version-matched schema instead of a
  * version-pinned URL:
  *
- *     #:schema vendor/carthage-software/mago/schema.json
+ *     #:schema vendor/teletype/mago/schema.json
  *
  * The schema is produced by the just-installed binary, so it always matches the version in
  * use. Generation is best-effort: any failure (read-only vendor dir, binary error, ...) is

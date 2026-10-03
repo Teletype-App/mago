@@ -591,10 +591,8 @@ where
         .extend(if_block_context.variables_possibly_in_scope.iter().copied());
 
     let old_if_block_context = if_block_context.clone();
-    if_block_context.throws_unreachable |= artifacts
-        .get_expression_type(if_statement.condition)
-        .is_some_and(|ty| ty.is_always_falsy())
-        || reconcilable_if_types.keys().any(|name| if_block_context.locals.get(name).is_some_and(|ty| ty.is_never()));
+    if_block_context.throws_unreachable |=
+        artifacts.get_expression_type(if_statement.condition).is_some_and(|ty| ty.is_always_falsy());
     let assigned_variable_ids = std::mem::take(&mut if_block_context.assigned_variable_ids);
     let possibly_assigned_variable_ids = std::mem::take(&mut if_block_context.possibly_assigned_variable_ids);
 
@@ -958,10 +956,7 @@ where
 
     let pre_assigned_variable_ids = std::mem::take(&mut else_if_block_context.assigned_variable_ids);
     else_if_block_context.throws_unreachable |=
-        artifacts.get_expression_type(else_if_clause.0).is_some_and(|ty| ty.is_always_falsy())
-            || reconcilable_else_if_types
-                .keys()
-                .any(|name| else_if_block_context.locals.get(name).is_some_and(|ty| ty.is_never()));
+        artifacts.get_expression_type(else_if_clause.0).is_some_and(|ty| ty.is_always_falsy());
     let pre_possibly_assigned_variable_ids = std::mem::take(&mut else_if_block_context.possibly_assigned_variable_ids);
 
     analyze_statements(else_if_clause.1, context, &mut else_if_block_context, artifacts)?;

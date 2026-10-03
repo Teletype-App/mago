@@ -242,6 +242,12 @@ where
         } else {
             &[]
         };
+        if use_contract
+            && thrown_types.is_empty()
+            && metadata.method_metadata.as_ref().is_some_and(|method| method.is_abstract)
+        {
+            block_context.unresolved_throw_calls.insert(invoication.span);
+        }
 
         for thrown_exception_type in thrown_types {
             let resolved_exception_type = resolve_invocation_type(

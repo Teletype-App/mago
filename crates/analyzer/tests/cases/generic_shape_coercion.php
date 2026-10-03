@@ -39,6 +39,7 @@ final class ShapeType
     ) {}
 
     /**
+     * @mago-expect analysis:throws-inference-incomplete
      * @throws Throwable
      *
      * @return array<Tk, Tv>

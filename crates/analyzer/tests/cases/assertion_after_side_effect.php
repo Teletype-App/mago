@@ -54,6 +54,7 @@ function assert_false(bool $flag): void
 
 /**
  * @throws \Exception
+ * @mago-expect analysis:unused-throws-type
  */
 function some_test(EntityManager $manager): void
 {
