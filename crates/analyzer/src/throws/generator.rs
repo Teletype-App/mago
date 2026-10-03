@@ -59,16 +59,6 @@ pub(crate) fn consume<A>(
     apply(block, artifacts, expression.span(), deferred, unknown_generator);
 }
 
-pub(crate) fn consume_method(
-    block: &mut BlockContext<'_>,
-    artifacts: &mut AnalysisArtifacts,
-    variable: Option<&[u8]>,
-    span: Span,
-) {
-    let deferred = variable.and_then(|variable| block.generator_throws.get(&word(variable))).cloned();
-    apply(block, artifacts, span, deferred, true);
-}
-
 fn apply(
     block: &mut BlockContext<'_>,
     artifacts: &mut AnalysisArtifacts,

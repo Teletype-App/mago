@@ -51,13 +51,15 @@ function consume(): void { foreach (deferred() as $value) {} }
 function consumeVariable(): void { $values = deferred(); foreach ($values as $value) {} }
 function consumeNative(): void { iterator_to_array(deferred()); }
 function consumeMethod(): void { $values = deferred(); $values->rewind(); }
+function consumeTemporary(): void { deferred()->rewind(); }
 function relay(): Generator { yield from deferred(); }
 function consumeRelay(): void { foreach (relay() as $value) {} }
 function caught(): void { try { foreach (deferred() as $value) {} } catch (DomainException) {} }
 function discarded(): void { $values = deferred(); $values = []; foreach ($values as $value) {} }
 ";
     assert!(missing_for(source, "deferred").is_empty());
-    for function in ["consume", "consumeVariable", "consumeNative", "consumeMethod", "consumeRelay"] {
+    for function in ["consume", "consumeVariable", "consumeNative", "consumeMethod", "consumeTemporary", "consumeRelay"]
+    {
         assert!(missing_for(source, function).iter().any(|message| message.contains("DomainException")), "{function}");
     }
     for function in ["caught", "discarded"] {

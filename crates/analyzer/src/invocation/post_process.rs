@@ -339,15 +339,6 @@ where
         crate::throws::generator::consume(context, block_context, artifacts, argument);
     }
 
-    if context.settings.throws_enabled()
-        && matches!(identifier, FunctionLikeIdentifier::Method(class, method) if class.as_bytes().eq_ignore_ascii_case(b"Generator") && matches!(method.as_bytes(), b"rewind" | b"next" | b"send" | b"throw" | b"valid" | b"current" | b"key"))
-    {
-        crate::throws::generator::consume_method(block_context, artifacts, this_variable, invoication.span);
-        if matches!(identifier, FunctionLikeIdentifier::Method(_, method) if method.as_bytes() == b"throw") {
-            block_context.unresolved_throw_calls.insert(invoication.span);
-        }
-    }
-
     if !apply_assertions {
         return Ok(());
     }

@@ -348,6 +348,14 @@ where
         )?;
     }
 
+    let generator_method = invocation_targets.iter().find_map(|target| {
+        let FunctionLikeIdentifier::Method(class, method) = target.get_function_like_identifier()? else {
+            return None;
+        };
+        (class.as_bytes().eq_ignore_ascii_case(b"Generator")
+            && matches!(method.as_bytes(), b"rewind" | b"next" | b"send" | b"throw" | b"valid" | b"current" | b"key"))
+        .then_some(*method)
+    });
     let has_resolved_methods = !invocation_targets.is_empty();
 
     record_external_method_call(context, artifacts, &invocation_targets, span);
@@ -386,6 +394,15 @@ where
             is_null_safe && method_resolution.encountered_null,
             artifacts.get_expression_type(object).is_some_and(|t| t.has_nullsafe_null()),
         )?;
+    }
+
+    if context.settings.throws_enabled()
+        && let Some(method) = generator_method
+    {
+        crate::throws::generator::consume(context, block_context, artifacts, object);
+        if method.as_bytes() == b"throw" {
+            block_context.unresolved_throw_calls.insert(span);
+        }
     }
 
     if !method_resolution.undocumented_methods.is_empty() {
