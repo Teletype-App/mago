@@ -174,13 +174,26 @@ function replacement(): void { try { caller(); } catch (Throwable $e) { $e = new
 
 #[test]
 fn local_closure_value_captures_follow_the_specialized_parent() {
-    let source = "<?php
+    for source in [
+        "<?php
 function leaf(bool $enabled): void { $callback = static fn() => $enabled ? throw new DomainException() : null; $callback(); }
 function no(): void { leaf(false); }
 function yes(): void { leaf(true); }
-";
-    assert!(missing_for(source, "no").is_empty());
-    assert!(missing_for(source, "yes")[0].contains("DomainException"));
+",
+        "<?php
+function leaf(bool $enabled): void {
+    $read = static fn() => $enabled;
+    $captured = $read();
+    $callback = static function() use ($captured): void { if ($captured) { throw new DomainException(); } };
+    $callback();
+}
+function no(): void { leaf(false); }
+function yes(): void { leaf(true); }
+",
+    ] {
+        assert!(missing_for(source, "no").is_empty());
+        assert!(missing_for(source, "yes")[0].contains("DomainException"));
+    }
 }
 
 #[test]

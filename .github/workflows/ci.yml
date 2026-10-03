@@ -90,6 +90,15 @@ jobs:
         if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
         run: python3 tools/throws/test_cli.py --mago ./target/release/mago
 
+      - name: Upload Linux binary for throws measurements
+        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mago-linux-x86_64-${{ github.sha }}
+          path: target/release/mago
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Validate composer code format
         if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
         run: ./target/release/mago format --dry-run

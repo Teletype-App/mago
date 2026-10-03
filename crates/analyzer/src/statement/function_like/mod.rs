@@ -170,6 +170,27 @@ pub fn analyze_function_like<'ctx, 'ast, 'arena, A>(
 where
     A: Arena,
 {
+    if context.throws_inference
+        && !function_like_metadata.kind.is_closure()
+        && !function_like_metadata.kind.is_arrow_function()
+        && let Some(specialization) = context.throws_specialization
+        && let Some(target) = context.codebase.get_function_like(&specialization.function)
+    {
+        let span = function_like_metadata.span;
+        let target_span = target.span;
+        // A specialized pass needs the target, its enclosing scopes for captures,
+        // and its nested callables. Keep sibling closures as well: their inferred
+        // return types can initialize variables captured by the target closure.
+        // Other named bodies already have general summaries.
+        if span.file_id != target_span.file_id
+            || span.end.offset <= target_span.start.offset
+            || target_span.end.offset <= span.start.offset
+        {
+            return Ok(AnalysisArtifacts::new()
+                .with_variable_definedness_targets(parent_artifacts.variable_definedness_targets()));
+        }
+    }
+
     let mut previous_type_resolution_context = std::mem::replace(
         &mut context.type_resolution_context,
         function_like_metadata.type_resolution_context.clone().unwrap_or_default(),
