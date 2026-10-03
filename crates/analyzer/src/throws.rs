@@ -361,7 +361,7 @@ impl ThrowsSummaries {
         summaries.contexts.retain(|key, _| codebase.get_function_like(&key.function).is_some());
         let mut inference_settings = settings.clone();
         inference_settings.diff = false;
-        let arena = LocalArena::new();
+        let parse_arena = LocalArena::new();
         let mut parsed_files = HashMap::default();
         let mut files_by_id = HashMap::default();
         for file in files {
@@ -393,9 +393,10 @@ impl ThrowsSummaries {
             for file in files.iter().filter(|file| work.contains(&file.id)) {
                 let started = trace_enabled.then(std::time::Instant::now);
                 let (program, names) = parsed_files.entry(file.id).or_insert_with(|| {
-                    let program = parse_file_with_settings(&arena, file, parser_settings);
-                    (program, NameResolver::new(&arena).resolve(program))
+                    let program = parse_file_with_settings(&parse_arena, file, parser_settings);
+                    (program, NameResolver::new(&parse_arena).resolve(program))
                 });
+                let arena = LocalArena::new();
                 let analyzer = Analyzer::new(&arena, file, names, codebase, registry, inference_settings.clone())
                     .with_throws_summaries(&summaries)
                     .with_throws_inference();
@@ -432,9 +433,10 @@ impl ThrowsSummaries {
                 };
                 let started = trace_enabled.then(std::time::Instant::now);
                 let (program, names) = parsed_files.entry(file.id).or_insert_with(|| {
-                    let program = parse_file_with_settings(&arena, file, parser_settings);
-                    (program, NameResolver::new(&arena).resolve(program))
+                    let program = parse_file_with_settings(&parse_arena, file, parser_settings);
+                    (program, NameResolver::new(&parse_arena).resolve(program))
                 });
+                let arena = LocalArena::new();
                 let mut analyzer = Analyzer::new(&arena, file, names, codebase, registry, inference_settings.clone())
                     .with_throws_summaries(&summaries)
                     .with_throws_inference();
