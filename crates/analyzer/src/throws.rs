@@ -361,11 +361,27 @@ impl ThrowsSummaries {
         summaries.contexts.retain(|key, _| codebase.get_function_like(&key.function).is_some());
         let mut inference_settings = settings.clone();
         inference_settings.diff = false;
+        let arena = LocalArena::new();
+        let mut parsed_files = HashMap::default();
+        let mut files_by_id = HashMap::default();
+        for file in files {
+            files_by_id.entry(file.id).or_insert(*file);
+        }
+        let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
+        let mut round = 0;
         let mut work = affected;
         loop {
             if work.is_empty() {
                 return Ok(summaries);
             }
+            round += 1;
+            let round_started = std::time::Instant::now();
+            tracing::trace!(
+                round,
+                files = work.len(),
+                contexts = summaries.contexts.len(),
+                "Starting throws inference round"
+            );
             let mut next = summaries.clone();
             next.functions.retain(|id, _| {
                 !codebase.get_function_like(id).is_some_and(|metadata| work.contains(&metadata.span.file_id))
@@ -375,10 +391,12 @@ impl ThrowsSummaries {
             });
             let mut requested_contexts = HashSet::default();
             for file in files.iter().filter(|file| work.contains(&file.id)) {
-                let arena = LocalArena::new();
-                let program = parse_file_with_settings(&arena, file, parser_settings);
-                let names = NameResolver::new(&arena).resolve(program);
-                let analyzer = Analyzer::new(&arena, file, &names, codebase, registry, inference_settings.clone())
+                let started = trace_enabled.then(std::time::Instant::now);
+                let (program, names) = parsed_files.entry(file.id).or_insert_with(|| {
+                    let program = parse_file_with_settings(&arena, file, parser_settings);
+                    (program, NameResolver::new(&arena).resolve(program))
+                });
+                let analyzer = Analyzer::new(&arena, file, names, codebase, registry, inference_settings.clone())
                     .with_throws_summaries(&summaries)
                     .with_throws_inference();
                 let mut result = AnalysisResult::new(SymbolReferences::new());
@@ -388,26 +406,36 @@ impl ThrowsSummaries {
                 next.dependencies.insert(file.id, dependencies);
                 next.functions.extend(artifacts.inferred_throws);
                 requested_contexts.extend(artifacts.throws_context_requests);
+                if let Some(started) = started {
+                    tracing::trace!(file = %mago_bytes::BytesDisplay(&file.name), elapsed = ?started.elapsed(), "Inferred general throws summaries");
+                }
             }
             requested_contexts.extend(summaries.contexts.keys().cloned());
             let mut pending = requested_contexts.into_iter().collect::<std::collections::BTreeSet<_>>();
+            let mut context_counts = HashMap::<FunctionLikeIdentifier, usize>::default();
+            for key in next.contexts.keys() {
+                *context_counts.entry(key.function).or_default() += 1;
+            }
+            let mut inferred_contexts = 0;
             while let Some(specialization) = pending.pop_first() {
                 if next.contexts.contains_key(&specialization) {
                     continue;
                 }
-                if next.contexts.keys().filter(|key| key.function == specialization.function).count() >= 64 {
+                if context_counts.get(&specialization.function).copied().unwrap_or_default() >= 64 {
                     continue;
                 }
                 let Some(metadata) = codebase.get_function_like(&specialization.function) else {
                     continue;
                 };
-                let Some(file) = files.iter().find(|file| file.id == metadata.span.file_id) else {
+                let Some(file) = files_by_id.get(&metadata.span.file_id) else {
                     continue;
                 };
-                let arena = LocalArena::new();
-                let program = parse_file_with_settings(&arena, file, parser_settings);
-                let names = NameResolver::new(&arena).resolve(program);
-                let mut analyzer = Analyzer::new(&arena, file, &names, codebase, registry, inference_settings.clone())
+                let started = trace_enabled.then(std::time::Instant::now);
+                let (program, names) = parsed_files.entry(file.id).or_insert_with(|| {
+                    let program = parse_file_with_settings(&arena, file, parser_settings);
+                    (program, NameResolver::new(&arena).resolve(program))
+                });
+                let mut analyzer = Analyzer::new(&arena, file, names, codebase, registry, inference_settings.clone())
                     .with_throws_summaries(&summaries)
                     .with_throws_inference();
                 analyzer.throws_specialization = Some(&specialization);
@@ -418,8 +446,14 @@ impl ThrowsSummaries {
                 pending.extend(
                     artifacts.throws_context_requests.into_iter().filter(|key| !next.contexts.contains_key(key)),
                 );
+                *context_counts.entry(specialization.function).or_default() += 1;
+                inferred_contexts += 1;
+                if let Some(started) = started {
+                    tracing::trace!(function = ?specialization.function, elapsed = ?started.elapsed(), "Inferred throws context");
+                }
                 next.contexts.insert(specialization, summary);
             }
+            tracing::trace!(round, inferred_contexts, contexts = next.contexts.len(), elapsed = ?round_started.elapsed(), "Completed throws inference round");
             if next == summaries {
                 return Ok(next);
             }
