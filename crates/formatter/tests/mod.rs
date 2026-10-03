@@ -191,6 +191,7 @@ test_case!(array_alignment);
 test_case!(align_parameters);
 test_case!(align_parameters_comment_marker_false_positive);
 test_case!(align_parameters_default_off);
+test_case!(align_parameters_variadic_and_by_reference);
 test_case!(align_named_arguments);
 test_case!(align_named_arguments_default_off);
 test_case!(binary_alignment);
@@ -200,6 +201,7 @@ test_case!(literal_concat_parens);
 test_case!(literal_concat_parens_without_spaces);
 test_case!(method_chain_semicolon_group_scope);
 test_case!(method_chain_semicolon_closing_tag);
+test_case!(method_chain_semicolon_embedded_expression);
 test_case!(method_chain_semicolon_group_scope_same_line_first_break);
 test_case!(preserve_breaking_member_access_chain);
 test_case!(preserve_breaking_member_access_chain_same_line_first_break);
@@ -492,6 +494,7 @@ test_case!(table_style_tiny_print_width);
 test_case!(issue_2150);
 test_case!(issue_2316);
 test_case!(issue_2380);
+test_case!(issue_2416);
 test_case!(issue_2183);
 
 // PHP identifiers may contain non-UTF-8 bytes; the formatter must round-trip

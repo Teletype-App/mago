@@ -60,13 +60,13 @@ impl ThrowsSelection {
                 continue;
             };
             if full_files.iter().any(|selected| selected == path) {
-                regions.insert(file.id, vec![0..=file.size]);
+                regions.insert(file.id, std::iter::once(0..=file.size).collect());
                 continue;
             }
             let relative = relative.to_string_lossy();
             let exists = git(workspace, &["cat-file", "-e", &format!("{revision}:{relative}")])?;
             if !exists.status.success() {
-                regions.insert(file.id, vec![0..=file.size]);
+                regions.insert(file.id, std::iter::once(0..=file.size).collect());
                 continue;
             }
             let diff = git(
