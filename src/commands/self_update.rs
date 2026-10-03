@@ -59,10 +59,10 @@ pub struct SelfUpdateCommand {
     /// Fails if `mago.toml` has no `version` pin; add one (e.g. `version = "1"`) or
     /// use `--tag` explicitly.
     ///
-    /// For exact pins (`version = "1.19.3"`) this resolves to that exact release tag.
+    /// For exact pins (`version = "1.51.1"`) this installs the latest fork patch
+    /// for that upstream version.
     /// For non-exact pins (`version = "1"` or `version = "1.19"`) this installs the
-    /// latest published release that satisfies the pin, or fails with a clear error
-    /// if the latest release is on a different major/minor line.
+    /// latest published release that satisfies the pin.
     #[arg(long, conflicts_with = "tag")]
     pub to_project_version: bool,
 }
@@ -201,12 +201,10 @@ fn confirm_prompt(msg: &str) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// Scans recent releases and returns the version string of the highest one
+/// Scans up to ten pages of GitHub releases and returns the highest version
 /// that satisfies `pin`.
 fn find_latest_release_satisfying(pin: &VersionPin) -> Result<Release, Error> {
     const MAX_PAGES: u32 = 10;
-
-    let pin_major = parse_version_components(&pin.to_string()).map(|(m, _, _)| m).unwrap_or(0);
 
     let mut best: Option<(Release, (u64, u64, u64))> = None;
     let mut latest_seen: Option<String> = None;
@@ -222,28 +220,27 @@ fn find_latest_release_satisfying(pin: &VersionPin) -> Result<Release, Error> {
             latest_seen = Some(releases[0].version.clone());
         }
 
-        let mut page_touched_pin_era = false;
-
         for release in releases {
             let Ok(components) = parse_version_components(&release.version) else {
                 continue;
             };
 
-            if components.0 >= pin_major {
-                page_touched_pin_era = true;
-            }
-
             if !matches!(pin.check(&release.version), Ok(VersionCheck::Match)) {
                 continue;
             }
 
-            if best.as_ref().is_none_or(|(_, best_components)| components > *best_components) {
+            let is_newer = match &best {
+                None => true,
+                Some((best_release, best_components)) => {
+                    components > *best_components
+                        || (components == *best_components
+                            && is_version_newer(&best_release.version, &release.version)?)
+                }
+            };
+
+            if is_newer {
                 best = Some((release, components));
             }
-        }
-
-        if !page_touched_pin_era {
-            break;
         }
     }
 

@@ -50,7 +50,7 @@ pub fn get_release_version(owner: &str, repo: &str, tag: &str) -> Result<Release
     parse_release(&json)
 }
 
-/// Fetches one page of non-draft releases (newest first) from the GitHub
+/// Fetches one page of non-draft releases from the GitHub
 /// Releases API.
 pub fn list_releases(owner: &str, repo: &str, page: u32) -> Result<Vec<Release>, UpdateError> {
     let url = format!("https://api.github.com/repos/{owner}/{repo}/releases?per_page=100&page={page}");
