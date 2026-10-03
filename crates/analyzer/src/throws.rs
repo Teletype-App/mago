@@ -18,10 +18,10 @@ pub(crate) fn canonical(identifier: FunctionLikeIdentifier) -> FunctionLikeIdent
     }
 }
 
-pub(crate) fn function_metadata<'a>(
-    codebase: &'a mago_codex::metadata::CodebaseMetadata,
+pub(crate) fn function_metadata<'metadata>(
+    codebase: &'metadata mago_codex::metadata::CodebaseMetadata,
     identifier: &FunctionLikeIdentifier,
-) -> Option<&'a mago_codex::metadata::function_like::FunctionLikeMetadata> {
+) -> Option<&'metadata mago_codex::metadata::function_like::FunctionLikeMetadata> {
     codebase.get_function_like(identifier).or_else(|| match identifier {
         FunctionLikeIdentifier::Method(class, method) => {
             codebase.get_declaring_method(class.as_bytes(), method.as_bytes())
@@ -273,7 +273,10 @@ pub(crate) fn record_throw(artifacts: &mut AnalysisArtifacts, block: &BlockConte
     artifacts.throw_conditions.entry((exception, span)).or_default().push(condition);
 }
 
-pub(crate) fn report_global<A: Arena>(context: &mut Context<'_, '_, A>, block: &BlockContext<'_>) {
+pub(crate) fn report_global<A>(context: &mut Context<'_, '_, A>, block: &BlockContext<'_>)
+where
+    A: Arena,
+{
     if !context.settings.check_throws_in_global_scope || context.throws_inference {
         return;
     }
@@ -290,12 +293,11 @@ pub(crate) fn report_global<A: Arena>(context: &mut Context<'_, '_, A>, block: &
         if ignored {
             continue;
         }
-        let mut issue = mago_reporting::Issue::error(format!("Uncaught exception `{exception}` in top-level code."));
         for span in spans {
-            issue = issue
+            let issue = mago_reporting::Issue::error(format!("Uncaught exception `{exception}` in top-level code."))
                 .with_annotation(mago_reporting::Annotation::primary(*span).with_message("Exception may escape here"));
+            context.collector.report_with_code(crate::code::IssueCode::UncaughtThrowInGlobalScope, issue);
         }
-        context.collector.report_with_code(crate::code::IssueCode::UncaughtThrowInGlobalScope, issue);
     }
 }
 

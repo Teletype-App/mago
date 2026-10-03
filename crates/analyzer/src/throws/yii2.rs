@@ -370,7 +370,7 @@ fn is_framework_class(codebase: &CodebaseMetadata, class: Word) -> bool {
     .any(|base| class.as_bytes().eq_ignore_ascii_case(base) || codebase.is_instance_of(class.as_bytes(), base))
 }
 
-pub(crate) fn collect_property<A: Arena>(
+pub(crate) fn collect_property<A>(
     context: &Context<'_, '_, A>,
     block: &mut crate::context::block::BlockContext<'_>,
     artifacts: &mut crate::artifacts::AnalysisArtifacts,
@@ -378,7 +378,9 @@ pub(crate) fn collect_property<A: Arena>(
     property: Word,
     span: mago_span::Span,
     write: bool,
-) {
+) where
+    A: Arena,
+{
     if !context.settings.throws_enabled()
         || !context.plugin_registry.yii2_throws
         || !is_framework_class(context.codebase, class)

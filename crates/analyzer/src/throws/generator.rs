@@ -11,11 +11,11 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::context::{Context, block::BlockContext};
 use crate::invocation::Invocation;
 
-pub(crate) fn effects<'a>(
+pub(crate) fn effects<'effects>(
     expression: &Expression<'_>,
-    block: &'a BlockContext<'_>,
-    artifacts: &'a AnalysisArtifacts,
-) -> Option<&'a FunctionThrowsSummary> {
+    block: &'effects BlockContext<'_>,
+    artifacts: &'effects AnalysisArtifacts,
+) -> Option<&'effects FunctionThrowsSummary> {
     if let Expression::Variable(Variable::Direct(variable)) = expression {
         return block.generator_throws.get(&word(variable.name));
     }
@@ -41,12 +41,14 @@ pub(crate) fn merge(destination: &mut FunctionThrowsSummary, source: &FunctionTh
     destination.unresolved_calls.extend(source.unresolved_calls.iter().copied());
 }
 
-pub(crate) fn consume<A: Arena>(
+pub(crate) fn consume<A>(
     context: &Context<'_, '_, A>,
     block: &mut BlockContext<'_>,
     artifacts: &mut AnalysisArtifacts,
     expression: &Expression<'_>,
-) {
+) where
+    A: Arena,
+{
     if !context.settings.throws_enabled() {
         return;
     }
@@ -118,7 +120,7 @@ impl SavedEffects {
     }
 }
 
-pub(crate) fn returned<A: Arena>(
+pub(crate) fn returned<A>(
     context: &Context<'_, '_, A>,
     block: &mut BlockContext<'_>,
     artifacts: &mut AnalysisArtifacts,
@@ -126,7 +128,9 @@ pub(crate) fn returned<A: Arena>(
     summary: &FunctionThrowsSummary,
     parameters: &WordMap<TUnion>,
     target: FunctionLikeIdentifier,
-) {
+) where
+    A: Arena,
+{
     let saved = SavedEffects::take(block, artifacts);
     super::propagate(context, block, artifacts, invocation, summary, parameters, target);
     block.unresolved_throw_calls.extend(summary.unresolved_calls.iter().copied());

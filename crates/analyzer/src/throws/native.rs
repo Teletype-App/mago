@@ -6,12 +6,15 @@ use mago_word::{Word, WordMap};
 
 use crate::{context::Context, invocation::Invocation};
 
-pub(crate) fn possible<A: Arena>(
+pub(crate) fn possible<A>(
     context: &Context<'_, '_, A>,
     invocation: &Invocation<'_, '_, '_>,
     parameters: &WordMap<TUnion>,
     exception: Word,
-) -> bool {
+) -> bool
+where
+    A: Arena,
+{
     if !matches!(invocation.target.get_function_like_identifier(), Some(FunctionLikeIdentifier::Function(name)) if name.as_bytes() == b"intdiv")
     {
         return true;

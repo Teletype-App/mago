@@ -121,6 +121,16 @@ fn global_exceptions_are_reported_independently_of_function_docblocks() {
             "<?php\n/** @mago-ignore analysis:uncaught-throw-in-global-scope */\nthrow new DomainException();",
             vec![],
         ),
+        (
+            "suppressed first call",
+            "<?php function leaf(): void { throw new DomainException(); }\n/** @mago-ignore analysis:uncaught-throw-in-global-scope */\nleaf();\nleaf();",
+            vec!["DomainException"],
+        ),
+        (
+            "suppressed second call",
+            "<?php function leaf(): void { throw new DomainException(); }\nleaf();\n/** @mago-ignore analysis:uncaught-throw-in-global-scope */\nleaf();",
+            vec!["DomainException"],
+        ),
     ] {
         let issues = analyze_with_settings(source, settings.clone());
         let global = issues
@@ -133,6 +143,7 @@ fn global_exceptions_are_reported_independently_of_function_docblocks() {
         }
         assert!(!issues.iter().any(|issue| issue.code.as_deref() == Some("unhandled-thrown-type")), "{name}");
         assert!(global.iter().all(|issue| issue.edits.is_empty()), "Top-level code has no function PHPDoc to fix");
+        assert!(global.iter().all(|issue| issue.annotations.len() == 1), "Each site must respect its own suppression");
     }
 }
 
