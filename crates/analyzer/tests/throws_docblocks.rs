@@ -291,3 +291,57 @@ function nullsafe(): void { $service = null; $service?->send(); }
     assert!(issues.iter().any(|issue| issue.code.as_deref() == Some("unused-throws-type")));
     assert!(!issues.iter().any(|issue| issue.code.as_deref() == Some("throws-inference-incomplete")));
 }
+
+#[test]
+fn removing_a_throw_from_a_recursive_context_matches_fresh_inference() {
+    use mago_analyzer::throws::ThrowsSummaries;
+    use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+    use mago_syntax::settings::ParserSettings;
+    use mago_word::word;
+
+    let source = "<?php
+function route(bool $execute = false): void {
+    if ($execute) { run(); } else { throw new DomainException(); }
+}
+function run(?bool $queue = null): void { route($queue === null); THROW }
+function caller(): void { run(); }
+";
+    let settings = Settings { check_throws: true, find_unused_parameters: false, ..Settings::default() };
+    let registry = PluginRegistry::with_library_providers();
+    let mut seed = ThrowsSummaries::default();
+    for throwing in [true, false] {
+        let text = source.replace("THROW", if throwing { "throw new LengthException();" } else { "" });
+        let file = File::ephemeral(Cow::Borrowed(b"contract.php"), Cow::Owned(text.into_bytes()));
+        let Prelude { mut metadata, mut symbol_references, .. } = PRELUDE.clone();
+        let arena = LocalArena::new();
+        let program = parse_file(&arena, &file);
+        assert!(!program.has_errors());
+        let names = NameResolver::new(&arena).resolve(program);
+        metadata.extend(scan_program(&arena, &file, program, &names, settings.version));
+        populate_codebase(&mut metadata, &mut symbol_references, WordSet::default(), HashSet::default());
+        seed = ThrowsSummaries::infer_incremental(
+            &[&file],
+            &metadata,
+            &registry,
+            &settings,
+            ParserSettings::default(),
+            seed,
+            Some(&HashSet::from_iter([file.id])),
+        )
+        .unwrap();
+        let caller = &seed.functions[&FunctionLikeIdentifier::Function(word("caller"))];
+        if throwing {
+            assert!(caller.exceptions.contains_key(&word("LengthException")));
+        } else {
+            assert!(caller.exceptions.is_empty(), "Removed throws must not circulate through recursion: {caller:?}");
+            let fresh =
+                ThrowsSummaries::infer(&[&file], &metadata, &registry, &settings, ParserSettings::default()).unwrap();
+            assert_eq!(caller, &fresh.functions[&FunctionLikeIdentifier::Function(word("caller"))]);
+            assert!(
+                seed.functions[&FunctionLikeIdentifier::Function(word("route"))]
+                    .exceptions
+                    .contains_key(&word("DomainException"))
+            );
+        }
+    }
+}

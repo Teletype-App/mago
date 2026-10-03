@@ -322,6 +322,20 @@ pub struct ThrowsSummaries {
 }
 
 impl ThrowsSummaries {
+    fn reset_effects(&mut self, codebase: &CodebaseMetadata, files: &HashSet<FileId>) {
+        for (id, summary) in &mut self.functions {
+            if codebase.get_function_like(id).is_some_and(|metadata| files.contains(&metadata.span.file_id)) {
+                *summary = FunctionThrowsSummary::default();
+            }
+        }
+        for (key, summary) in &mut self.contexts {
+            if codebase.get_function_like(&key.function).is_some_and(|metadata| files.contains(&metadata.span.file_id))
+            {
+                *summary = FunctionThrowsSummary::default();
+            }
+        }
+    }
+
     /// Stabilizes body summaries before reporting callers. Only source files supplied
     /// by the host are analyzed. Other files continue to supply external contracts.
     /// Infer exception effects from project source bodies.
@@ -359,6 +373,8 @@ impl ThrowsSummaries {
         }
         summaries.functions.retain(|id, _| codebase.get_function_like(id).is_some());
         summaries.contexts.retain(|key, _| codebase.get_function_like(&key.function).is_some());
+        // Removed throws must not survive by circulating through cached recursive summaries.
+        summaries.reset_effects(codebase, &affected);
         let mut inference_settings = settings.clone();
         inference_settings.diff = false;
         let parse_arena = LocalArena::new();
@@ -370,6 +386,8 @@ impl ThrowsSummaries {
         let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
         let mut round = 0;
         let mut work = affected;
+        let mut previous_functions: HashMap<FunctionLikeIdentifier, Option<FunctionThrowsSummary>> = HashMap::default();
+        let mut previous_contexts: HashMap<ThrowsContext, Option<FunctionThrowsSummary>> = HashMap::default();
         loop {
             if work.is_empty() {
                 return Ok(summaries);
@@ -460,10 +478,13 @@ impl ThrowsSummaries {
                 return Ok(next);
             }
             let mut changed = HashSet::default();
+            let mut changed_functions = HashMap::default();
+            let mut changed_contexts = HashMap::default();
             for (id, summary) in &next.functions {
                 if summaries.functions.get(id) != Some(summary)
                     && let Some(metadata) = codebase.get_function_like(id)
                 {
+                    changed_functions.insert(*id, summaries.functions.get(id).cloned());
                     if trace_enabled && (32..36).contains(&round) && work.len() <= 16 {
                         tracing::trace!(function = ?id, previous = ?summaries.functions.get(id), current = ?summary, "Changed throws function summary");
                     }
@@ -474,6 +495,7 @@ impl ThrowsSummaries {
                 if summaries.contexts.get(key) != Some(summary)
                     && let Some(metadata) = codebase.get_function_like(&key.function)
                 {
+                    changed_contexts.insert(key.clone(), summaries.contexts.get(key).cloned());
                     if trace_enabled && (32..36).contains(&round) && work.len() <= 16 {
                         tracing::trace!(function = ?key.function, arguments = ?key.arguments, previous = ?summaries.contexts.get(key), current = ?summary, "Changed throws context summary");
                     }
@@ -487,6 +509,43 @@ impl ThrowsSummaries {
                 .map(|(file, _)| *file)
                 .collect();
             work.extend(changed);
+            let reverses_previous_round = (!changed_functions.is_empty() || !changed_contexts.is_empty())
+                && changed_functions.len() == previous_functions.len()
+                && changed_contexts.len() == previous_contexts.len()
+                && changed_functions.keys().all(|id| {
+                    previous_functions.get(id).is_some_and(|previous| previous.as_ref() == next.functions.get(id))
+                })
+                && changed_contexts.keys().all(|key| {
+                    previous_contexts.get(key).is_some_and(|previous| previous.as_ref() == next.contexts.get(key))
+                });
+            if reverses_previous_round {
+                // New specializations can inherit general effects before their callees are registered.
+                // Recompute the affected dependency closure from empty effects with those keys retained.
+                // Known bodies, external contracts and unresolved calls are analyzed again normally.
+                loop {
+                    let callers = next
+                        .dependencies
+                        .iter()
+                        .filter(|(file, callees)| !work.contains(file) && !callees.is_disjoint(&work))
+                        .map(|(file, _)| *file)
+                        .collect::<Vec<_>>();
+                    if callers.is_empty() {
+                        break;
+                    }
+                    work.extend(callers);
+                }
+                tracing::debug!(
+                    round,
+                    files = work.len(),
+                    "Recomputing cyclic throws effects from registered contexts"
+                );
+                next.reset_effects(codebase, &work);
+                previous_functions.clear();
+                previous_contexts.clear();
+            } else {
+                previous_functions = changed_functions;
+                previous_contexts = changed_contexts;
+            }
             summaries = next;
         }
     }
