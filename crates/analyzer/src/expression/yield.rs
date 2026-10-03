@@ -252,6 +252,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for YieldFrom<'arena> {
         let was_inside_call = block_context.flags.inside_call();
         block_context.flags.set_inside_call(true);
         self.iterator.analyze(context, block_context, artifacts)?;
+        crate::throws::generator::consume(context, block_context, artifacts, self.iterator);
         block_context.flags.set_inside_call(was_inside_call);
 
         let Some((k, v, s, _)) = get_current_generator_parameters(context, block_context, self.span()) else {

@@ -331,6 +331,15 @@ where
         let magic_method = context.codebase.get_method_by_id(&magic_method_identifier);
 
         for prop_name in &property_names {
+            crate::throws::yii2::collect_property(
+                context,
+                block_context,
+                artifacts,
+                classname,
+                *prop_name,
+                property_selector.span(),
+                for_assignment,
+            );
             if let TObject::Enum(enum_type) = object
                 && let Some(resolved) = resolve_enum_builtin_property(context, enum_type, *prop_name)
             {

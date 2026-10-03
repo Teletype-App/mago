@@ -94,7 +94,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Throw<'arena> {
             }
         }
 
-        if context.settings.check_throws {
+        if context.settings.throws_enabled() {
             for exception in thrown_names {
                 crate::throws::record_throw(artifacts, block_context, exception, self.span());
             }

@@ -87,7 +87,13 @@ pub(crate) fn inherit_branch_context_properties<'ctx, A>(
         }
     }
 
-    if context.settings.check_throws && !source_context.throws_unreachable {
+    if context.settings.throws_enabled() && !source_context.throws_unreachable {
+        for (variable, deferred) in &source_context.generator_throws {
+            crate::throws::generator::merge(
+                destination_context.generator_throws.entry(*variable).or_default(),
+                deferred,
+            );
+        }
         destination_context.unresolved_throw_calls.extend(&source_context.unresolved_throw_calls);
         for (exception, spans) in &source_context.possibly_thrown_exceptions {
             destination_context.possibly_thrown_exceptions.entry(*exception).or_default().extend(spans);

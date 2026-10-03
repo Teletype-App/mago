@@ -13,20 +13,24 @@ fn location(span: Span, database: &ReadDatabase) -> Value {
     json!({"file": file.as_ref().map(|file| String::from_utf8_lossy(&file.name).into_owned()), "line": file.as_ref().map(|file| file.line_number(span.start.offset) + 1), "offset": span.start.offset})
 }
 
-fn summary(summary: &FunctionThrowsSummary, database: &ReadDatabase) -> Value {
-    let mut exceptions = summary.exceptions.iter().collect::<Vec<_>>();
+fn summary(throws: &FunctionThrowsSummary, database: &ReadDatabase) -> Value {
+    let mut exceptions = throws.exceptions.iter().collect::<Vec<_>>();
     exceptions.sort_by_key(|(name, _)| **name);
     let exceptions = exceptions.into_iter().map(|(name, alternatives)| {
         let conditions = alternatives.iter().map(|conjunction| conjunction.iter().map(|(index, value)| {
             let value = match value { ConditionValue::Bool(value) => json!(value), ConditionValue::Int(value) => json!(value), ConditionValue::String(value) => json!(value.to_string()), ConditionValue::Null => Value::Null };
             json!({"parameter_index": index, "equals": value})
         }).collect::<Vec<_>>()).collect::<Vec<_>>();
-        let sites = summary.provenance.get(name).into_iter().flatten().map(|site| json!({"location": location(site.span, database), "callee": site.target.map(|target| target.as_string())})).collect::<Vec<_>>();
+        let sites = throws.provenance.get(name).into_iter().flatten().map(|site| json!({"location": location(site.span, database), "callee": site.target.map(|target| target.as_string())})).collect::<Vec<_>>();
         json!({"exception": name.to_string(), "conditions": conditions, "origins": sites})
     }).collect::<Vec<_>>();
-    let mut unresolved = summary.unresolved_calls.iter().copied().collect::<Vec<_>>();
+    let mut unresolved = throws.unresolved_calls.iter().copied().collect::<Vec<_>>();
     unresolved.sort();
-    json!({"exceptions": exceptions, "unresolved_calls": unresolved.into_iter().map(|span| location(span, database)).collect::<Vec<_>>()})
+    let mut result = json!({"exceptions": exceptions, "unresolved_calls": unresolved.into_iter().map(|span| location(span, database)).collect::<Vec<_>>()});
+    if let Some(returned) = &throws.returned_generator {
+        result["returned_generator"] = summary(returned, database);
+    }
+    result
 }
 
 pub(super) fn write(path: &Path, summaries: &ThrowsSummaries, database: &ReadDatabase) -> Result<(), Error> {

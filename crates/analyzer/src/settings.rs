@@ -56,6 +56,15 @@ pub struct Settings {
     /// This check is disabled by default (`false`) as it can be computationally expensive.
     pub check_throws: bool,
 
+    /// Report exceptions escaping top-level code, independently of function PHPDoc checks.
+    pub check_throws_in_global_scope: bool,
+
+    /// Ignore these exceptions and descendants only in top-level code.
+    pub unchecked_exceptions_in_global_scope: WordSet,
+
+    /// Ignore these exact exception classes only in top-level code.
+    pub unchecked_exception_classes_in_global_scope: WordSet,
+
     /// Exceptions to ignore including all subclasses (hierarchy-aware).
     ///
     /// When an exception class is in this set, any exception of that class or any of its
@@ -387,6 +396,11 @@ impl Default for Settings {
 
 impl Settings {
     #[must_use]
+    pub const fn throws_enabled(&self) -> bool {
+        self.check_throws || self.check_throws_in_global_scope
+    }
+
+    #[must_use]
     pub fn new(version: PHPVersion) -> Self {
         let default_thresholds = AlgebraThresholds::default();
         let default_combiner_options = CombinerOptions::default();
@@ -400,6 +414,9 @@ impl Settings {
             memoize_properties: true,
             allow_possibly_undefined_array_keys: true,
             check_throws: false,
+            check_throws_in_global_scope: false,
+            unchecked_exceptions_in_global_scope: WordSet::default(),
+            unchecked_exception_classes_in_global_scope: WordSet::default(),
             unchecked_exceptions: WordSet::default(),
             unchecked_exception_classes: WordSet::default(),
             use_colors: true,

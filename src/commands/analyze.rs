@@ -412,6 +412,8 @@ impl AnalyzeCommand {
             issues.filter_retain_codes(
                 &[
                     "unhandled-thrown-type",
+                    "invalid-throws-type",
+                    "uncaught-throw-in-global-scope",
                     "overly-wide-throws-type",
                     "unused-throws-type",
                     "throws-inference-incomplete",

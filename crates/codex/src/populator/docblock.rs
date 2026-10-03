@@ -409,7 +409,8 @@ fn apply_inheritance_work(codebase: &mut CodebaseMetadata, mut inheritance_work:
                 .collect();
 
             let should_inherit_templates = child_method.template_types.is_empty() && !parent_template_types.is_empty();
-            let should_inherit_thrown = child_method.thrown_types.is_empty() && !substituted_thrown_types.is_empty();
+            let should_inherit_thrown = (child_method.thrown_types.is_empty() || has_explicit_inherit_doc)
+                && !substituted_thrown_types.is_empty();
 
             let parent_has_any_assertions = !parent_assertions.is_empty()
                 || !parent_if_true_assertions.is_empty()
@@ -542,7 +543,11 @@ fn apply_inheritance_work(codebase: &mut CodebaseMetadata, mut inheritance_work:
         }
 
         if let Some(parent_thrown) = parent_thrown_to_apply {
-            child_method.thrown_types = parent_thrown;
+            for thrown in parent_thrown {
+                if !child_method.thrown_types.contains(&thrown) {
+                    child_method.thrown_types.push(thrown);
+                }
+            }
         }
 
         if should_clear_inferred_assertions {

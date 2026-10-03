@@ -14,13 +14,14 @@ def command(args, cwd, **kwargs):
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, **kwargs)
 
 
-def analyze(binary, workspace, *args):
+def analyze(binary, workspace, *args, throws_only=True):
     invocation = [
         'prlimit', '--as=1073741824', '--cpu=45',
         'timeout', '--signal=TERM', '--kill-after=5s', '40s',
         binary, '--workspace', str(workspace), '--config', str(workspace / 'mago.toml'),
         '--threads', '1', '--colors', 'never', 'analyze', '--no-extensions',
-        '--throws-only', *([] if '--fix' in args else ['--reporting-format', 'json']), *args,
+        *(['--throws-only'] if throws_only else []),
+        *([] if '--fix' in args else ['--reporting-format', 'json']), *args,
     ]
     result = subprocess.run(invocation, cwd=workspace, capture_output=True, timeout=50)
     assert result.returncode in (0, 1), result.stderr.decode()
@@ -79,12 +80,28 @@ foreach ($calls as $name => $call) {
     try { $call(); $effects[$name] = null; }
     catch (Throwable $error) { $effects[$name] = get_class($error); }
 }
+function deferredProbe(): Generator { yield (static function(): void { throw new DomainException(); })(); }
+$generators = [
+    'generator-create' => static fn() => deferredProbe(),
+    'generator-iterate' => static function(): void { foreach (deferredProbe() as $value) {} },
+    'generator-rewind' => static function(): void { deferredProbe()->rewind(); },
+    'intdiv-safe' => static fn() => intdiv(42, 1),
+    'intdiv-zero' => static fn() => intdiv(42, 0),
+    'intdiv-overflow' => static fn() => intdiv(PHP_INT_MIN, -1),
+];
+foreach ($generators as $name => $call) {
+    try { $call(); $effects[$name] = null; }
+    catch (Throwable $error) { $effects[$name] = get_class($error); }
+}
 echo json_encode($effects, JSON_THROW_ON_ERROR);
 ''', timeout=20)
     assert json.loads(runtime.stdout) == {
         'immediate': 'DomainException', 'native': 'DomainException', 'empty': None,
         'multiple': 'DomainException', 'all-empty': None,
         'contract': 'DomainException', 'false': None, 'true': 'DomainException',
+        'generator-create': None, 'generator-iterate': 'DomainException',
+        'generator-rewind': 'DomainException',
+        'intdiv-safe': None, 'intdiv-zero': 'DivisionByZeroError', 'intdiv-overflow': 'ArithmeticError',
     }
     print('PHP runtime callback and conditional effects: passed', flush=True)
     with tempfile.TemporaryDirectory(prefix='mago-native-throws-test-') as temp:
@@ -190,6 +207,88 @@ echo json_encode($effects, JSON_THROW_ON_ERROR);
         analyze(binary, workspace, '--fix', '--potentially-unsafe')
         assert file.read_text() == source
         print('Unresolved method contracts remain intact after CLI fixing: passed', flush=True)
+
+    with tempfile.TemporaryDirectory(prefix='mago-native-generator-cache-') as temp:
+        workspace = Path(temp)
+        (workspace / 'cases').mkdir()
+        (workspace / 'dependencies').mkdir()
+        write_config(workspace)
+        leaf = workspace / 'cases/stream.php'
+        leaf.write_text('''<?php
+namespace LazyProbe;
+/** @param callable(): void $callback */
+function stream(callable $callback): \\Generator { yield $callback(); }
+function factory(): \\Generator {
+    return stream(static function(): void { throw new \\DomainException(); });
+}
+''')
+        consumer = workspace / 'cases/consumer.php'
+        consumer.write_text('''<?php
+namespace LazyProbe;
+/** @throws \\DomainException */
+function consume(): void { $values = factory(); foreach ($values as $value) {} }
+''')
+        initial = analyze(binary, workspace, '--throws-cache', 'state.json', '--throws-explain', 'origins.json')
+        assert not missing(initial, 'LazyProbe\\consume')
+        assert signature(analyze(binary, workspace, '--throws-cache', 'state.json')) == signature(initial)
+        explained = json.loads((workspace / 'origins.json').read_text())
+        factory = next(item['summary'] for item in explained['functions'] if item['function'] == 'lazyprobe\\factory')
+        assert not factory['exceptions']
+        assert {item['exception'] for item in factory['returned_generator']['exceptions']} == {'DomainException'}
+        leaf.write_text(leaf.read_text().replace('DomainException', 'LengthException'))
+        changed = analyze(binary, workspace, '--throws-cache', 'state.json')
+        assert signature(changed) == signature(analyze(binary, workspace))
+        assert 'LengthException' in missing(changed, 'LazyProbe\\consume')[0]['message']
+        print('Deferred generator effects survive CLI explanations, warm cache and dependency edits: passed', flush=True)
+
+    with tempfile.TemporaryDirectory(prefix='mago-native-trait-cache-') as temp:
+        workspace = Path(temp)
+        (workspace / 'cases').mkdir()
+        (workspace / 'dependencies').mkdir()
+        write_config(workspace)
+        parent = workspace / 'cases/parents.php'
+        parent.write_text('''<?php
+class DomainBase { /** @throws DomainException */ public function save(): void { throw new DomainException(); } }
+class LengthBase { /** @throws LengthException */ public function save(): void { throw new LengthException(); } }
+''')
+        (workspace / 'cases/trait.php').write_text('<?php trait Save { public function save(): void { parent::save(); } }\n')
+        (workspace / 'cases/callers.php').write_text('''<?php
+final class DomainWorker extends DomainBase { use Save; }
+final class LengthWorker extends LengthBase { use Save; }
+/** @throws DomainException */ function domain(DomainWorker $worker): void { $worker->save(); }
+/** @throws LengthException */ function length(LengthWorker $worker): void { $worker->save(); }
+''')
+        initial = analyze(binary, workspace, '--throws-cache', 'state.json')
+        assert not missing(initial, 'domain') and not missing(initial, 'length')
+        assert signature(analyze(binary, workspace, '--throws-cache', 'state.json')) == signature(initial)
+        parent.write_text(parent.read_text().replace('DomainException', 'RangeException'))
+        changed = analyze(binary, workspace, '--throws-cache', 'state.json')
+        assert signature(changed) == signature(analyze(binary, workspace))
+        assert 'RangeException' in missing(changed, 'domain')[0]['message']
+        assert not missing(changed, 'length')
+        print('Shared trait receiver contexts survive warm cache and parent dependency edits: passed', flush=True)
+
+    with tempfile.TemporaryDirectory(prefix='mago-native-global-throws-') as temp:
+        workspace = Path(temp)
+        (workspace / 'cases').mkdir()
+        (workspace / 'dependencies').mkdir()
+        write_config(workspace)
+        config = workspace / 'mago.toml'
+        config.write_text(config.read_text().replace('check-throws = true', 'check-throws = false') + 'check-throws-in-global-scope = true\n')
+        (workspace / 'cases/global.php').write_text('<?php\nleaf();\n')
+        (workspace / 'cases/leaf.php').write_text('<?php function leaf(): void { throw new DomainException(); }\n')
+        global_only = analyze(binary, workspace, throws_only=False)
+        assert any(issue['code'] == 'uncaught-throw-in-global-scope' for issue in global_only)
+        assert not any(issue['code'] == 'unhandled-thrown-type' for issue in global_only)
+        assert any(issue['code'] == 'uncaught-throw-in-global-scope' for issue in analyze(binary, workspace))
+        config.write_text(config.read_text().replace('check-throws = false', 'check-throws = true'))
+        invalid = workspace / 'cases/invalid.php'
+        source = '<?php /** @throws UnknownException */ function run(): void {}\n'
+        invalid.write_text(source)
+        assert any(issue['code'] == 'invalid-throws-type' for issue in analyze(binary, workspace))
+        analyze(binary, workspace, '--fix', '--potentially-unsafe')
+        assert invalid.read_text() == source
+        print('Global and invalid-contract diagnostics survive throws-only filtering and fixing: passed', flush=True)
 
     with tempfile.TemporaryDirectory(prefix='mago-native-yii-test-') as temp:
         workspace = Path(temp)

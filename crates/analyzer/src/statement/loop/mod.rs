@@ -1437,6 +1437,7 @@ where
     block_context.flags.set_inside_general_use(true);
     iterator.analyze(context, block_context, artifacts)?;
     block_context.flags.set_inside_general_use(was_inside_general_use);
+    crate::throws::generator::consume(context, block_context, artifacts, iterator);
 
     let iterator_type = if let Some(it_type) = artifacts.get_rc_expression_type(iterator).cloned() {
         it_type

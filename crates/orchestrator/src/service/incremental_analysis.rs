@@ -1288,7 +1288,7 @@ impl IncrementalAnalysisService {
         &self,
         codebase: &CodebaseMetadata,
     ) -> Result<Option<mago_analyzer::throws::ThrowsSummaries>, OrchestratorError> {
-        if !self.settings.check_throws {
+        if !self.settings.throws_enabled() {
             return Ok(None);
         }
         let files = self
@@ -1346,7 +1346,7 @@ impl IncrementalAnalysisService {
         let references_changed = before.references != self.external_symbol_references;
         let external_symbol_references = before.references;
         let effective_skip_files =
-            if references_changed || settings.check_throws { HashSet::default() } else { skip_files.clone() };
+            if references_changed || settings.throws_enabled() { HashSet::default() } else { skip_files.clone() };
         let throws_summaries = self.infer_throws(codebase)?;
         let host_files: Vec<_> = self
             .database
@@ -1370,7 +1370,7 @@ impl IncrementalAnalysisService {
             tracing::warn!("No host files found for analysis.");
         }
         let mut settings = settings.clone();
-        if settings.check_throws {
+        if settings.throws_enabled() {
             settings.diff = false;
         }
         let parser_settings = self.parser_settings;

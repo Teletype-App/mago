@@ -240,10 +240,7 @@ where
         return Vec::new();
     };
     let class = method.class_like_metadata.name;
-    if !context.codebase.is_instance_of(class.as_bytes(), b"yii\\base\\BaseObject")
-        && !context.codebase.is_instance_of(class.as_bytes(), b"yii\\db\\QueryInterface")
-        && !context.codebase.is_instance_of(class.as_bytes(), b"yii\\BaseYii")
-    {
+    if !is_framework_class(context.codebase, class) {
         return Vec::new();
     }
     let info = InvocationInfo::new(invocation);
@@ -356,6 +353,74 @@ where
     result.sort();
     result.dedup();
     result
+}
+
+fn is_framework_class(codebase: &CodebaseMetadata, class: Word) -> bool {
+    [
+        b"yii\\base\\BaseObject".as_slice(),
+        b"yii\\base\\Component",
+        b"yii\\base\\Model",
+        b"yii\\db\\BaseActiveRecord",
+        b"yii\\db\\QueryInterface",
+        b"yii\\db\\Query",
+        b"yii\\db\\ActiveQuery",
+        b"yii\\BaseYii",
+    ]
+    .iter()
+    .any(|base| class.as_bytes().eq_ignore_ascii_case(base) || codebase.is_instance_of(class.as_bytes(), base))
+}
+
+pub(crate) fn collect_property<A: Arena>(
+    context: &Context<'_, '_, A>,
+    block: &mut crate::context::block::BlockContext<'_>,
+    artifacts: &mut crate::artifacts::AnalysisArtifacts,
+    class: Word,
+    property: Word,
+    span: mago_span::Span,
+    write: bool,
+) {
+    if !context.settings.throws_enabled()
+        || !context.plugin_registry.yii2_throws
+        || !is_framework_class(context.codebase, class)
+        || context.codebase.get_declaring_property(class.as_bytes(), property.as_bytes()).is_some()
+    {
+        return;
+    }
+    let Some(summaries) = context.throws_summaries else {
+        return;
+    };
+    let mut method = if write { b"set".to_vec() } else { b"get".to_vec() };
+    method.extend(property.as_bytes().strip_prefix(b"$").unwrap_or(property.as_bytes()));
+    let mut targets = Vec::new();
+    resolve(context.codebase, summaries, class, &[&method], false, &mut targets);
+    for target in targets {
+        let Some(metadata) = context.codebase.get_function_like(&target) else {
+            continue;
+        };
+        artifacts.throws_dependencies.insert(metadata.span.file_id);
+        let summary = summaries.functions.get(&target);
+        if let Some(summary) = summary {
+            for exception in summary.exceptions.keys() {
+                block.possibly_thrown_exceptions.entry(*exception).or_default().insert(span);
+                artifacts.throw_targets.entry((*exception, span)).or_default().insert(target);
+                super::record_throw(artifacts, block, *exception, span);
+            }
+            if !summary.unresolved_calls.is_empty() {
+                block.unresolved_throw_calls.insert(span);
+            }
+        } else if !summaries.source_files.contains(&metadata.span.file_id) {
+            for exception in metadata
+                .thrown_types
+                .iter()
+                .flat_map(|thrown| thrown.type_union.types.iter())
+                .flat_map(mago_codex::ttype::atomic::TAtomic::get_all_object_names)
+            {
+                block.possibly_thrown_exceptions.entry(exception).or_default().insert(span);
+                artifacts.throw_targets.entry((exception, span)).or_default().insert(target);
+                super::record_throw(artifacts, block, exception, span);
+            }
+        }
+    }
 }
 
 fn config_class<A>(expression: &Expression<'_>, class: Word, context: &Context<'_, '_, A>) -> Option<Word>

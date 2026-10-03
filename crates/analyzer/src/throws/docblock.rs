@@ -66,7 +66,44 @@ where
     let mut replacements = Vec::<(Span, String)>::new();
     let mut documents = PrecedingDocblocks::new(context.comments, metadata.span.start.offset).collect::<Vec<_>>();
     documents.reverse();
-    let own_thrown_types = metadata
+    let parsed = documents
+        .iter()
+        .map(|comment| PHPDocParser::parse_with_span(context.arena, comment.value, comment.span))
+        .collect::<Vec<_>>();
+    let ambiguous = parsed.iter().any(|document| {
+        document.has_errors()
+            || document.tags().any(|tag| {
+                let TagValue::Throws(thrown) = &tag.value else {
+                    return false;
+                };
+                thrown.description.as_ref().is_some_and(|description| {
+                    description.segments.iter().any(|segment| {
+                        if let mago_phpdoc_syntax::cst::TextSegment::PlainText(text) = segment {
+                            text.value.windows(2).any(|pair| pair == b"*@")
+                        } else {
+                            false
+                        }
+                    })
+                })
+            })
+    });
+    if ambiguous {
+        return changes;
+    }
+    let described = parsed
+        .iter()
+        .flat_map(|document| document.tags())
+        .filter_map(|tag| {
+            if let TagValue::Throws(thrown) = &tag.value
+                && thrown.description.is_some()
+            {
+                Some(thrown.r#type.span())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut own_thrown_types = metadata
         .thrown_types
         .iter()
         .filter(|declared| {
@@ -77,6 +114,14 @@ where
             })
         })
         .collect::<Vec<_>>();
+    own_thrown_types.sort_by_key(|declared| {
+        (
+            !described.contains(&declared.span),
+            std::cmp::Reverse(declared.type_union.types.len()),
+            declared.span.start.offset,
+        )
+    });
+    let mut retained = Vec::<TUnion>::new();
     if complete {
         for declared in &own_thrown_types {
             let Some((_, expanded)) = expected.iter().find(|(span, _)| *span == declared.span) else {
@@ -112,16 +157,30 @@ where
                     ),
                 })
             });
-            let code = if matching.is_empty() {
+            let redundant = exact
+                .as_ref()
+                .is_some_and(|inferred| retained.iter().any(|previous| covered(context, inferred, previous)));
+            if let Some(exact) = &exact
+                && !redundant
+            {
+                retained.push(exact.clone());
+            }
+            let code = if matching.is_empty() || redundant {
                 IssueCode::UnusedThrowsType
             } else if exact.as_ref().is_some_and(|inferred| !covered(context, expanded, inferred)) {
                 IssueCode::OverlyWideThrowsType
             } else {
                 continue;
             };
-            let inferred = matching.iter().map(|exception| render(context, *exception)).collect::<Vec<_>>().join("|");
+            let inferred = if redundant {
+                String::new()
+            } else {
+                matching.iter().map(|exception| render(context, *exception)).collect::<Vec<_>>().join("|")
+            };
             replacements.push((declared.span, inferred.clone()));
-            let message = if matching.is_empty() {
+            let message = if redundant {
+                "This exception is already covered by another @throws tag".to_string()
+            } else if matching.is_empty() {
                 "This exception does not escape the body".to_string()
             } else {
                 format!("The body only throws {inferred}")
@@ -152,10 +211,7 @@ where
 
     let mut added = false;
     for (index, comment) in documents.iter().enumerate() {
-        let document = PHPDocParser::parse_with_span(context.arena, comment.value, comment.span);
-        if document.has_errors() {
-            return DocblockChanges { edits: Vec::new(), issues: changes.issues };
-        }
+        let document = &parsed[index];
         let mut edits = Vec::<(std::ops::Range<usize>, Vec<u8>)>::new();
         for tag in document.tags() {
             let TagValue::Throws(thrown) = &tag.value else {

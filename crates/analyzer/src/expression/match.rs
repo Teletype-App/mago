@@ -696,7 +696,7 @@ where
     }
 
     fn merge_match_contexts(&mut self, arm_exit_contexts: &[BlockContext<'ctx>]) {
-        if self.context.settings.check_throws {
+        if self.context.settings.throws_enabled() {
             for ctx in arm_exit_contexts.iter().filter(|ctx| ctx.flags.has_returned() && !ctx.throws_unreachable) {
                 self.block_context.unresolved_throw_calls.extend(ctx.unresolved_throw_calls.iter().copied());
                 for (exception, spans) in &ctx.possibly_thrown_exceptions {

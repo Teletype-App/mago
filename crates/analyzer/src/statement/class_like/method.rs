@@ -50,6 +50,23 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
 
             return Ok(());
         };
+        let class_like_metadata = if context.throws_inference && class_like_metadata.kind.is_trait() {
+            context
+                .throws_specialization
+                .and_then(|key| {
+                    let mago_codex::identifier::function_like::FunctionLikeIdentifier::Method(receiver, _) =
+                        key.function
+                    else {
+                        return None;
+                    };
+                    (crate::throws::function_metadata(context.codebase, &key.function)?.span == self.span())
+                        .then(|| context.codebase.get_class_like(receiver.as_bytes()))
+                        .flatten()
+                })
+                .unwrap_or(class_like_metadata)
+        } else {
+            class_like_metadata
+        };
 
         let method_name = word(self.name.value);
         let lowercase_method_name = ascii_lowercase_word(self.name.value);
@@ -59,8 +76,18 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             return Ok(());
         }
 
-        let Some(method_metadata) =
-            context.codebase.get_method_by_id(&MethodIdentifier::new(class_like_metadata.name, lowercase_method_name))
+        let Some(method_metadata) = context
+            .codebase
+            .get_method_by_id(&MethodIdentifier::new(class_like_metadata.name, lowercase_method_name))
+            .or_else(|| {
+                (context.throws_inference && context.throws_specialization.is_some())
+                    .then(|| {
+                        context
+                            .codebase
+                            .get_declaring_method(class_like_metadata.name.as_bytes(), lowercase_method_name.as_bytes())
+                    })
+                    .flatten()
+            })
         else {
             tracing::error!(
                 "Failed to find method metadata for `{}` in class `{}`.",

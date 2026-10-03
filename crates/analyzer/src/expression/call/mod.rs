@@ -135,7 +135,7 @@ fn analyze_invocation_targets<'ctx, 'ast, 'arena, A>(
 where
     A: Arena,
 {
-    if context.settings.check_throws
+    if context.settings.throws_enabled()
         && (encountered_invalid_targets
             || encountered_mixed_targets
             || (invocation_targets.is_empty() && !should_add_null && !object_has_nullsafe_null))

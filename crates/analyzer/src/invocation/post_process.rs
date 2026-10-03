@@ -82,7 +82,7 @@ where
     clear_object_property_narrowings(context, block_context, invoication, this_variable);
 
     let Some(identifier) = invoication.target.get_function_like_identifier() else {
-        if context.settings.check_throws {
+        if context.settings.throws_enabled() {
             block_context.unresolved_throw_calls.insert(invoication.span);
         }
         return Ok(());
@@ -96,12 +96,15 @@ where
             .map(FunctionLikeIdentifier::from)
             .unwrap_or(*identifier),
     );
-    if context.settings.check_throws
+    let deferred = (context.settings.throws_enabled()
+        && invoication.target.get_function_like_metadata().is_some_and(|metadata| metadata.flags.has_yield()))
+    .then(|| crate::throws::generator::SavedEffects::take(block_context, artifacts));
+    if context.settings.throws_enabled()
         && let Some(metadata) = context.codebase.get_function_like(&summary_identifier)
     {
         artifacts.throws_dependencies.insert(metadata.span.file_id);
     }
-    let specialization = if context.settings.check_throws {
+    let specialization = if context.settings.throws_enabled() {
         crate::throws::invocation_context(context, invoication, parameters)
     } else {
         None
@@ -122,7 +125,7 @@ where
                 .or_else(|| summaries.functions.get(&summary_identifier))
         })
     });
-    if context.settings.check_throws
+    if context.settings.throws_enabled()
         && let Some(inferred) = inferred
     {
         crate::throws::propagate(
@@ -138,7 +141,7 @@ where
             block_context.unresolved_throw_calls.insert(invoication.span);
         }
     }
-    if context.settings.check_throws
+    if context.settings.throws_enabled()
         && let Some(method) = invoication.target.get_method_context()
         && method.invocation_kind == crate::invocation::MethodInvocationKind::Instance
         && !method.class_like_metadata.flags.is_final()
@@ -168,7 +171,7 @@ where
     }
 
     let Some(metadata) = invoication.target.get_function_like_metadata() else {
-        if context.settings.check_throws && inferred.is_none() {
+        if context.settings.throws_enabled() && inferred.is_none() {
             block_context.unresolved_throw_calls.insert(invoication.span);
         }
         return Ok(());
@@ -228,7 +231,7 @@ where
         }
     }
 
-    if context.settings.check_throws {
+    if context.settings.throws_enabled() {
         let use_contract = inferred.is_none()
             && !context.throws_summaries.is_some_and(|summaries| {
                 summaries.source_files.contains(&metadata.span.file_id)
@@ -260,6 +263,9 @@ where
 
             for exception_atomic in resolved_exception_type.types.into_owned() {
                 for exception in exception_atomic.get_all_object_names() {
+                    if !crate::throws::native::possible(context, invoication, parameters, exception) {
+                        continue;
+                    }
                     block_context.possibly_thrown_exceptions.entry(exception).or_default().insert(invoication.span);
                     artifacts
                         .throw_targets
@@ -308,6 +314,37 @@ where
                     }
                 }
             }
+        }
+    }
+
+    if let Some(deferred) = deferred {
+        deferred.finish(block_context, artifacts, invoication.span);
+    } else if context.settings.throws_enabled()
+        && let Some(returned) = inferred.and_then(|summary| summary.returned_generator.as_deref())
+    {
+        crate::throws::generator::returned(
+            context,
+            block_context,
+            artifacts,
+            invoication,
+            returned,
+            parameters,
+            summary_identifier,
+        );
+    }
+    if context.settings.throws_enabled()
+        && matches!(identifier, FunctionLikeIdentifier::Function(name) if matches!(name.as_bytes(), b"iterator_to_array" | b"iterator_count" | b"iterator_apply"))
+        && let Some(argument) = crate::plugin::context::InvocationInfo::new(invoication).get_argument(0, &[b"iterator"])
+    {
+        crate::throws::generator::consume(context, block_context, artifacts, argument);
+    }
+
+    if context.settings.throws_enabled()
+        && matches!(identifier, FunctionLikeIdentifier::Method(class, method) if class.as_bytes().eq_ignore_ascii_case(b"Generator") && matches!(method.as_bytes(), b"rewind" | b"next" | b"send" | b"throw" | b"valid" | b"current" | b"key"))
+    {
+        crate::throws::generator::consume_method(block_context, artifacts, this_variable, invoication.span);
+        if matches!(identifier, FunctionLikeIdentifier::Method(_, method) if method.as_bytes() == b"throw") {
+            block_context.unresolved_throw_calls.insert(invoication.span);
         }
     }
 

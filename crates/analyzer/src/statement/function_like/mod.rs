@@ -174,7 +174,7 @@ where
         && !function_like_metadata.kind.is_closure()
         && !function_like_metadata.kind.is_arrow_function()
         && let Some(specialization) = context.throws_specialization
-        && let Some(target) = context.codebase.get_function_like(&specialization.function)
+        && let Some(target) = crate::throws::function_metadata(context.codebase, &specialization.function)
     {
         let span = function_like_metadata.span;
         let target_span = target.span;
@@ -370,7 +370,7 @@ where
 
     check_return_type_width(context, block_context, &mut artifacts, function_like_metadata);
     check_thrown_types(context, block_context, &mut artifacts, function_like_metadata);
-    if context.settings.check_throws
+    if context.settings.throws_enabled()
         && let Some(identifier) = block_context.scope.get_function_like_identifier()
     {
         artifacts.inferred_throws.insert(
@@ -1262,15 +1262,36 @@ fn check_thrown_types<'ctx, A>(
             )
         })
         .collect::<Vec<_>>();
+    let mut invalid_contract = false;
+    for (span, declared) in &expected_throw_types {
+        if declared.types.iter().all(|atomic| atomic.extends_or_implements(context.codebase, b"Throwable")) {
+            continue;
+        }
+        invalid_contract = true;
+        context.collector.report_with_code(
+            IssueCode::InvalidThrowsType,
+            Issue::error(format!(
+                "Invalid exception contract `{}`: @throws must name a known Throwable type.",
+                declared.get_id()
+            ))
+            .with_annotation(
+                Annotation::primary(*span).with_message("This type cannot be used as an exception contract"),
+            ),
+        );
+    }
+    if invalid_contract {
+        return;
+    }
     let mut actual = block_context.possibly_thrown_exceptions.keys().copied().collect::<Vec<_>>();
     actual.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-    let mut changes = crate::throws::docblock::prepare(
+    let changes = crate::throws::docblock::prepare(
         context,
         block_context,
         function_like_metadata,
         &actual,
         &expected_throw_types,
     );
+    let mut issues = Vec::new();
 
     for (thrown_type, thrown_spans) in &block_context.possibly_thrown_exceptions {
         // Skip if exception is in unchecked lists
@@ -1318,13 +1339,12 @@ fn check_thrown_types<'ctx, A>(
                 "You can add `@throws {thrown_type}` to the {function_kind}'s docblock or wrap the throwing code in a `try-catch` block."
             ));
 
-        let edits = std::mem::take(&mut changes.edits);
-        context.collector.propose_with_code(IssueCode::UnhandledThrownType, issue, |proposed| proposed.extend(edits));
+        issues.push(issue.with_code(IssueCode::UnhandledThrownType));
     }
     for (code, issue) in changes.issues {
-        let edits = std::mem::take(&mut changes.edits);
-        context.collector.propose_with_code(code, issue, |proposed| proposed.extend(edits));
+        issues.push(issue.with_code(code));
     }
+    context.collector.propose_group(issues, changes.edits);
 }
 
 /// Checks if an exception should be ignored based on the unchecked exception settings.

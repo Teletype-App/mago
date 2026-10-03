@@ -264,6 +264,18 @@ where
         property_write_kind,
     )?;
 
+    if context.settings.throws_enabled()
+        && let Some(variable) = target_variable_id
+    {
+        let deferred = source_expression
+            .and_then(|source| crate::throws::generator::effects(source, block_context, artifacts))
+            .cloned();
+        block_context.generator_throws.remove(&variable);
+        if let Some(deferred) = deferred {
+            block_context.generator_throws.insert(variable, deferred);
+        }
+    }
+
     if !successful {
         if matches!(
             target_expression,

@@ -22,13 +22,16 @@ use mago_word::WordSet;
 static PRELUDE: LazyLock<Prelude> = LazyLock::new(Prelude::build);
 
 fn analyze(source: &str) -> IssueCollection {
+    analyze_with_settings(source, Settings { check_throws: true, find_unused_parameters: false, ..Settings::default() })
+}
+
+fn analyze_with_settings(source: &str, settings: Settings) -> IssueCollection {
     let Prelude { mut metadata, mut symbol_references, .. } = PRELUDE.clone();
     let file = File::ephemeral(Cow::Borrowed(b"contract.php"), Cow::Owned(source.as_bytes().to_vec()));
     let arena = LocalArena::new();
     let program = parse_file(&arena, &file);
     assert!(!program.has_errors(), "Invalid PHP: {:?}", program.errors);
     let names = NameResolver::new(&arena).resolve(program);
-    let settings = Settings { check_throws: true, find_unused_parameters: false, ..Settings::default() };
     metadata.extend(scan_program(&arena, &file, program, &names, settings.version));
     populate_codebase(&mut metadata, &mut symbol_references, WordSet::default(), HashSet::default());
     let registry = PluginRegistry::with_library_providers();
@@ -36,6 +39,186 @@ fn analyze(source: &str) -> IssueCollection {
     Analyzer::new(&arena, &file, &names, &metadata, &registry, settings).analyze(program, &mut result).unwrap();
     result.issues.extend(metadata.take_issues(true));
     result.issues
+}
+
+#[test]
+fn generator_effects_start_on_consumption_and_survive_factory_returns() {
+    let source = "<?php
+/** @param callable(): void $callback */
+function stream(callable $callback): Generator { yield $callback(); }
+function deferred(): Generator { return stream(static function(): void { throw new DomainException(); }); }
+function consume(): void { foreach (deferred() as $value) {} }
+function consumeVariable(): void { $values = deferred(); foreach ($values as $value) {} }
+function consumeNative(): void { iterator_to_array(deferred()); }
+function consumeMethod(): void { $values = deferred(); $values->rewind(); }
+function relay(): Generator { yield from deferred(); }
+function consumeRelay(): void { foreach (relay() as $value) {} }
+function caught(): void { try { foreach (deferred() as $value) {} } catch (DomainException) {} }
+function discarded(): void { $values = deferred(); $values = []; foreach ($values as $value) {} }
+";
+    assert!(missing_for(source, "deferred").is_empty());
+    for function in ["consume", "consumeVariable", "consumeNative", "consumeMethod", "consumeRelay"] {
+        assert!(missing_for(source, function).iter().any(|message| message.contains("DomainException")), "{function}");
+    }
+    for function in ["caught", "discarded"] {
+        assert!(missing_for(source, function).is_empty(), "{function}");
+    }
+    let unknown =
+        "<?php /** @throws RuntimeException */ function consume(Generator $values): void { $values->next(); }";
+    assert!(analyze(unknown).iter().any(|issue| issue.code.as_deref() == Some("throws-inference-incomplete")));
+    assert_eq!(fix(unknown), unknown);
+}
+
+#[test]
+fn ignored_exception_contracts_respect_exact_classes_and_hierarchies() {
+    use mago_word::word;
+    let source = "<?php /** @throws RuntimeException */ function run(): void {}";
+    for (name, descendants, unused) in [
+        ("RuntimeException", false, false),
+        ("rUnTiMeExCePtIoN", false, false),
+        ("Exception", true, false),
+        ("Exception", false, true),
+        ("LogicException", true, true),
+    ] {
+        let mut settings = Settings { check_throws: true, ..Settings::default() };
+        if descendants {
+            settings.unchecked_exceptions.insert(word(name));
+        } else {
+            settings.unchecked_exception_classes.insert(word(name));
+        }
+        let issues = analyze_with_settings(source, settings);
+        assert_eq!(issues.iter().any(|issue| issue.code.as_deref() == Some("unused-throws-type")), unused, "{name}");
+    }
+}
+
+#[test]
+fn global_exceptions_are_reported_independently_of_function_docblocks() {
+    let settings = Settings { check_throws_in_global_scope: true, ..Settings::default() };
+    for (name, source, exceptions) in [
+        ("direct", "<?php throw new DomainException();", vec!["DomainException"]),
+        (
+            "inferred call",
+            "<?php function leaf(): void { throw new DomainException(); } leaf();",
+            vec!["DomainException"],
+        ),
+        (
+            "namespace",
+            "<?php namespace App; function leaf(): void { throw new \\DomainException(); } leaf();",
+            vec!["DomainException"],
+        ),
+        (
+            "caught",
+            "<?php function leaf(): void { throw new DomainException(); } try { leaf(); } catch (Throwable) {}",
+            vec![],
+        ),
+        (
+            "finally",
+            "<?php try { throw new DomainException(); } finally { throw new LengthException(); }",
+            vec!["LengthException"],
+        ),
+        (
+            "suppressed",
+            "<?php\n/** @mago-ignore analysis:uncaught-throw-in-global-scope */\nthrow new DomainException();",
+            vec![],
+        ),
+    ] {
+        let issues = analyze_with_settings(source, settings.clone());
+        let global = issues
+            .iter()
+            .filter(|issue| issue.code.as_deref() == Some("uncaught-throw-in-global-scope"))
+            .collect::<Vec<_>>();
+        assert_eq!(global.len(), exceptions.len(), "{name}: {issues:?}");
+        for exception in exceptions {
+            assert!(global.iter().any(|issue| issue.message.contains(exception)), "{name}");
+        }
+        assert!(!issues.iter().any(|issue| issue.code.as_deref() == Some("unhandled-thrown-type")), "{name}");
+        assert!(global.iter().all(|issue| issue.edits.is_empty()), "Top-level code has no function PHPDoc to fix");
+    }
+}
+
+#[test]
+fn global_exception_ignores_do_not_hide_function_contract_errors() {
+    use mago_word::word;
+    let source = "<?php function leaf(): void { throw new DomainException(); } leaf();";
+    for (name, descendants, hidden) in
+        [("dOmAiNeXcEpTiOn", false, true), ("LogicException", true, true), ("LogicException", false, false)]
+    {
+        let mut settings = Settings { check_throws: true, check_throws_in_global_scope: true, ..Settings::default() };
+        if descendants {
+            settings.unchecked_exceptions_in_global_scope.insert(word(name));
+        } else {
+            settings.unchecked_exception_classes_in_global_scope.insert(word(name));
+        }
+        let issues = analyze_with_settings(source, settings);
+        assert!(issues.iter().any(|issue| issue.code.as_deref() == Some("unhandled-thrown-type")), "{name}");
+        assert_eq!(
+            issues.iter().any(|issue| issue.code.as_deref() == Some("uncaught-throw-in-global-scope")),
+            !hidden,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn exception_factories_fluent_construction_and_native_callables_keep_their_effects() {
+    let cases = [
+        (
+            "factory",
+            "function make(): DomainException { return new DomainException(); } function run(): void { throw make(); }",
+            "DomainException",
+        ),
+        (
+            "static factory",
+            "final class Factory { public static function make(): DomainException { return new DomainException(); } } function run(): void { throw Factory::make(); }",
+            "DomainException",
+        ),
+        (
+            "fluent constructor",
+            "class Fault extends DomainException { public function context(): self { return $this; } } function run(): void { throw (new Fault())->context(); }",
+            "Fault",
+        ),
+        ("native random", "function run(): int { return random_int(1, 2); }", "Random\\RandomException"),
+        ("first class native", "function run(): Closure { return random_int(...); }", ""),
+        (
+            "ordered catch",
+            "function run(): void { try { throw new DomainException(); } catch (DomainException) {} catch (Throwable $e) { throw new LengthException(); } }",
+            "",
+        ),
+    ];
+    for (name, body, exception) in cases {
+        let source = format!("<?php {body}");
+        let missing = missing_for(&source, "run");
+        if exception.is_empty() {
+            assert!(missing.is_empty(), "{name}: {missing:?}");
+        } else {
+            assert_eq!(missing.len(), 1, "{name}: {missing:?}");
+            assert!(missing[0].contains(exception), "{name}: {missing:?}");
+        }
+    }
+}
+
+#[test]
+fn integer_division_reports_only_reachable_native_errors() {
+    for (source, expected) in [
+        ("function run(int $value): int { return intdiv($value, 1); }", vec![]),
+        ("function run(int $value): int { return intdiv($value, 0); }", vec!["DivisionByZeroError"]),
+        ("function run(): int { return intdiv(PHP_INT_MIN, -1); }", vec!["ArithmeticError"]),
+        ("function run(): int { return intdiv(1, -1); }", vec![]),
+        (
+            "/** @throws RangeException */ function run(int $value, int $divisor): int { if ($divisor <= 0) { throw new RangeException(); } return intdiv($value, $divisor); }",
+            vec![],
+        ),
+        (
+            "function run(int $value, int $divisor): int { return intdiv($value, $divisor); }",
+            vec!["ArithmeticError", "DivisionByZeroError"],
+        ),
+    ] {
+        let missing = missing_for(&format!("<?php {source}"), "run");
+        assert_eq!(missing.len(), expected.len(), "{source}: {missing:?}");
+        for exception in expected {
+            assert!(missing.iter().any(|issue| issue.contains(&format!("`{exception}`"))), "{source}");
+        }
+    }
 }
 
 fn fix(source: &str) -> String {
@@ -47,6 +230,159 @@ fn fix(source: &str) -> String {
         }
     }
     String::from_utf8(editor.finish()).unwrap()
+}
+
+#[test]
+fn explicit_inheritdoc_extends_the_parent_exception_contract() {
+    for inherited in ["{@inheritdoc}", "@inheritdoc"] {
+        let source = format!(
+            "<?php
+interface Contract {{ /** @throws DomainException */ public function run(bool $parent): void; }}
+final class Worker implements Contract {{
+    /** {inherited}
+     * @throws LengthException
+     */
+    public function run(bool $parent): void {{
+        if ($parent) {{ throw new DomainException(); }}
+        throw new LengthException();
+    }}
+}}"
+        );
+        assert!(missing_for(&source, "Worker::run").is_empty(), "{inherited}: {:?}", analyze(&source));
+        assert_eq!(fix(&source), source);
+        let overridden = source.replace(inherited, "Own contract.");
+        assert!(missing_for(&overridden, "Worker::run")[0].contains("DomainException"));
+    }
+}
+
+#[test]
+fn yii_hooks_work_with_their_declared_framework_roots() {
+    for (root, method, hook) in [
+        ("yii\\base\\Model", "validate", "afterValidate"),
+        ("yii\\db\\BaseActiveRecord", "save", "afterSave"),
+        ("yii\\base\\Component", "trigger", "handle"),
+    ] {
+        let (namespace, class) = root.rsplit_once('\\').unwrap();
+        let source = if method == "trigger" {
+            format!("<?php
+namespace {namespace} {{ class {class} {{ public function on(string $name, callable $handler): void {{}} public function trigger(string $name): void {{}} }} }}
+namespace App {{ final class Worker extends \\{root} {{
+    public function init(): void {{ $this->on('run', [$this, 'handle']); }}
+    /** @throws \\DomainException */ public function handle(): void {{ throw new \\DomainException(); }}
+}}
+function run(Worker $worker): void {{ $worker->trigger('run'); }}
+function register(Worker $worker): void {{ $worker->on('other', [$worker, 'handle']); }} }}")
+        } else {
+            format!("<?php
+namespace {namespace} {{ class {class} {{ public function {method}(): void {{}} public function {hook}(): void {{}} }} }}
+namespace App {{ final class Worker extends \\{root} {{
+    /** @throws \\DomainException */ public function {hook}(): void {{ throw new \\DomainException(); }}
+}}
+function run(Worker $worker): void {{ $worker->{method}(); }} }}")
+        };
+        assert!(missing_for(&source, "App\\run").iter().any(|issue| issue.contains("DomainException")), "{root}");
+        assert!(missing_for(&source, "App\\register").is_empty());
+    }
+}
+
+#[test]
+fn yii_magic_property_hooks_do_not_replace_real_properties() {
+    let source = "<?php
+namespace yii\\base { class Component { public function __get(string $name): mixed { return null; } public function __set(string $name, mixed $value): void {} } }
+namespace App {
+final class Worker extends \\yii\\base\\Component {
+    public string $plain = '';
+    /** @throws \\DomainException */ public function getLabel(): string { throw new \\DomainException(); }
+    /** @throws \\LengthException */ public function setLabel(string $value): void { throw new \\LengthException(); }
+    /** @throws \\OverflowException */ public function getPlain(): string { throw new \\OverflowException(); }
+    /** @throws \\UnderflowException */ public function setPlain(string $value): void { throw new \\UnderflowException(); }
+}
+function read(Worker $worker): void { echo $worker->label; }
+function write(Worker $worker): void { $worker->label = 'new'; }
+function real(Worker $worker): void { echo $worker->plain; $worker->plain = 'new'; }
+}
+";
+    assert!(missing_for(source, "App\\read").iter().any(|issue| issue.contains("DomainException")));
+    assert!(missing_for(source, "App\\write").iter().any(|issue| issue.contains("LengthException")));
+    assert!(missing_for(source, "App\\real").is_empty());
+}
+
+#[test]
+fn shared_trait_parent_calls_use_each_consumers_parent() {
+    let source = "<?php
+class DomainBase { /** @throws DomainException */ public function save(): void { throw new DomainException(); } }
+class LengthBase { /** @throws LengthException */ public function save(): void { throw new LengthException(); } }
+trait Save { public function save(): void { parent::save(); } }
+final class DomainWorker extends DomainBase { use Save; }
+final class LengthWorker extends LengthBase { use Save; }
+function domain(DomainWorker $worker): void { $worker->save(); }
+function length(LengthWorker $worker): void { $worker->save(); }
+";
+    for (function, expected, excluded) in
+        [("domain", "DomainException", "LengthException"), ("length", "LengthException", "DomainException")]
+    {
+        let missing = missing_for(source, function);
+        assert_eq!(missing.len(), 1, "{function}: {missing:?}");
+        assert!(missing[0].contains(expected), "{function}: {missing:?}");
+        assert!(!missing[0].contains(excluded), "{function}: {missing:?}");
+    }
+}
+
+#[test]
+fn invalid_exception_contracts_are_reported_and_not_erased() {
+    for source in [
+        "<?php /** @throws MissingException */ function run(): void {}",
+        "<?php class NotAnException {} /** @throws NotAnException */ function run(): void {}",
+        "<?php /** @throws int */ function run(): void {}",
+    ] {
+        let issues = analyze(source);
+        assert!(issues.iter().any(|issue| issue.code.as_deref() == Some("invalid-throws-type")), "{issues:?}");
+        assert_eq!(fix(source), source);
+    }
+}
+
+#[test]
+fn malformed_exception_tags_are_preserved_by_the_fixer() {
+    let source =
+        "<?php class Worker { /** @throws Exception*@throws RuntimeException */ public function run(): void {} }";
+    assert_eq!(fix(source), source);
+}
+
+#[test]
+fn suppressed_docblock_changes_do_not_escape_through_other_diagnostics() {
+    for (ignored, documented, body) in [
+        ("unused-throws-type", "RuntimeException", "throw new DomainException();"),
+        ("overly-wide-throws-type", "Exception", "if ($raise) { throw new DomainException(); } throw new TypeError();"),
+        ("unhandled-thrown-type", "RuntimeException", "throw new DomainException();"),
+    ] {
+        let source = format!(
+            "<?php\n/**\n * @throws {documented}\n * @mago-ignore analysis:{ignored}\n */\nfunction run(bool $raise): void {{ {body} }}\n"
+        );
+        let issues = analyze(&source);
+        assert!(!issues.iter().any(|issue| issue.code.as_deref() == Some(ignored)), "{ignored}");
+        assert!(
+            issues.iter().any(|issue| matches!(
+                issue.code.as_deref(),
+                Some("unhandled-thrown-type" | "unused-throws-type" | "overly-wide-throws-type")
+            )),
+            "The other diagnosis still applies: {issues:?}"
+        );
+        assert_eq!(fix(&source), source, "{ignored}");
+    }
+}
+
+#[test]
+fn duplicate_exception_tags_are_removed_without_losing_descriptions() {
+    for source in [
+        "<?php\n/**\n * @throws DomainException\n * @throws DomainException When the value is invalid.\n */\nfunction run(): void { throw new DomainException(); }\n",
+        "<?php\n/**\n * @throws DomainException|LengthException When the value is invalid.\n * @throws DomainException\n */\nfunction run(bool $domain): void { if ($domain) { throw new DomainException(); } throw new LengthException(); }\n",
+    ] {
+        let fixed = fix(source);
+        assert_eq!(fixed.matches("@throws").count(), 1, "{fixed}");
+        assert!(fixed.contains("When the value is invalid."));
+        assert!(analyze(&fixed).iter().all(|issue| issue.code.as_deref() != Some("unhandled-thrown-type")));
+        assert_eq!(fix(&fixed), fixed);
+    }
 }
 
 #[test]

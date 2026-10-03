@@ -339,7 +339,7 @@ impl AnalysisService {
                 let before = before_plugin_registry
                     .run_external_before_analysis_hooks(codebase, before_external_session.as_deref())
                     .map_err(AnalysisError::from)?;
-                if throws_settings.check_throws {
+                if throws_settings.throws_enabled() {
                     let files = throws_files.iter().map(AsRef::as_ref).collect::<Vec<_>>();
                     let (seed, affected) = throws_seed
                         .clone()

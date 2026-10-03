@@ -239,6 +239,14 @@ where
     /// Reports an issue, returning `true` if it was added or `false` if it was suppressed.
     #[inline]
     pub fn report(&mut self, issue: Issue) -> bool {
+        if !self.should_report(&issue) {
+            return false;
+        }
+        self.force_report(issue);
+        true
+    }
+
+    fn should_report(&mut self, issue: &Issue) -> bool {
         let primary_span = issue.annotations.iter().find(|ann| ann.kind.is_primary()).map(|ann| ann.span);
 
         if let Some(code) = issue.code.as_deref() {
@@ -280,8 +288,30 @@ where
             }
         }
 
-        self.force_report(issue);
         true
+    }
+
+    /// Report diagnostics sharing an atomic edit, applying it only when every diagnosis is visible.
+    /// This prevents a suppressed change from being carried by an unrelated visible diagnosis.
+    pub fn propose_group(&mut self, issues: impl IntoIterator<Item = Issue>, edits: std::vec::Vec<TextEdit>) {
+        let mut accepted = std::vec::Vec::new();
+        let mut complete = true;
+        for issue in issues {
+            if self.should_report(&issue) {
+                accepted.push(issue);
+            } else {
+                complete = false;
+            }
+        }
+        let mut edits = complete.then_some(edits);
+        for mut issue in accepted {
+            if let Some(edits) = edits.take()
+                && !edits.is_empty()
+            {
+                issue = issue.with_file_edits(self.file.id, edits);
+            }
+            self.force_report(issue);
+        }
     }
 
     /// Reports an issue with a specific code, returning `true` if it was added.

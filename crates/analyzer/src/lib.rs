@@ -174,7 +174,7 @@ where
         program: &'ast Program<'arena>,
         analysis_result: &mut AnalysisResult,
     ) -> Result<AnalysisArtifacts, AnalysisError> {
-        if self.settings.check_throws && self.throws_summaries.is_none() {
+        if self.settings.throws_enabled() && self.throws_summaries.is_none() {
             let summaries = throws::ThrowsSummaries::infer(
                 &[self.source_file],
                 self.codebase,
@@ -282,6 +282,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let statements_start = trace_enabled.then(std::time::Instant::now);
         analyze_statements(statements, &mut context, &mut block_context, &mut artifacts)?;
+        throws::report_global(&mut context, &block_context);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(start) = statements_start {
             telemetry::record_statements(start.elapsed());

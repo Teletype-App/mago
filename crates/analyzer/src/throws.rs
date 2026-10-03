@@ -1,5 +1,7 @@
 pub(crate) mod callbacks;
 pub(crate) mod docblock;
+pub(crate) mod generator;
+pub(crate) mod native;
 pub mod yii2;
 
 pub(crate) fn canonical(identifier: FunctionLikeIdentifier) -> FunctionLikeIdentifier {
@@ -14,6 +16,18 @@ pub(crate) fn canonical(identifier: FunctionLikeIdentifier) -> FunctionLikeIdent
         ),
         FunctionLikeIdentifier::Closure(_) => identifier,
     }
+}
+
+pub(crate) fn function_metadata<'a>(
+    codebase: &'a mago_codex::metadata::CodebaseMetadata,
+    identifier: &FunctionLikeIdentifier,
+) -> Option<&'a mago_codex::metadata::function_like::FunctionLikeMetadata> {
+    codebase.get_function_like(identifier).or_else(|| match identifier {
+        FunctionLikeIdentifier::Method(class, method) => {
+            codebase.get_declaring_method(class.as_bytes(), method.as_bytes())
+        }
+        _ => None,
+    })
 }
 
 use crate::artifacts::AnalysisArtifacts;
@@ -82,6 +96,7 @@ pub type ThrowCondition = BTreeMap<usize, ConditionValue>;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FunctionThrowsSummary {
+    pub returned_generator: Option<Box<FunctionThrowsSummary>>,
     #[cfg_attr(feature = "serde", serde(with = "word_map_serde"))]
     pub provenance: WordMap<Vec<ThrowSite>>,
     #[cfg_attr(feature = "serde", serde(with = "word_map_serde"))]
@@ -139,12 +154,25 @@ where
     if context.throws_summaries.is_some_and(|summaries| !summaries.source_files.contains(&metadata.span.file_id)) {
         return None;
     }
-    let function = invocation
+    let mut function = invocation
         .target
         .get_method_context()
         .and_then(|method| method.declaring_method_id)
         .map(FunctionLikeIdentifier::from)
         .or_else(|| invocation.target.get_function_like_identifier().copied())?;
+    let trait_receiver = invocation.target.get_method_context().is_some_and(|method| {
+        let Some(declaring) = method.declaring_method_id else {
+            return false;
+        };
+        context
+            .codebase
+            .get_class_like(declaring.get_class_name().as_bytes())
+            .is_some_and(|class| class.kind.is_trait())
+            && method.class_like_metadata.name != declaring.get_class_name()
+    });
+    if trait_receiver && let Some(method) = invocation.target.get_method_context() {
+        function = FunctionLikeIdentifier::Method(method.class_like_metadata.name, metadata.name);
+    }
     let arguments = metadata
         .parameters
         .iter()
@@ -173,7 +201,7 @@ where
                 .then(|| (index, value.clone()))
         })
         .collect::<Vec<_>>();
-    (!arguments.is_empty()).then_some(ThrowsContext { function: canonical(function), arguments })
+    (trait_receiver || !arguments.is_empty()).then_some(ThrowsContext { function: canonical(function), arguments })
 }
 
 impl FunctionThrowsSummary {
@@ -193,7 +221,11 @@ impl FunctionThrowsSummary {
     }
 
     pub(crate) fn collect(block: &BlockContext<'_>, artifacts: &AnalysisArtifacts) -> Self {
-        let mut summary = Self { unresolved_calls: block.unresolved_throw_calls.clone(), ..Self::default() };
+        let mut summary = Self {
+            unresolved_calls: block.unresolved_throw_calls.clone(),
+            returned_generator: artifacts.returned_generator_throws.clone().map(Box::new),
+            ..Self::default()
+        };
         for (exception, spans) in &block.possibly_thrown_exceptions {
             for span in spans {
                 let sites = summary.provenance.entry(*exception).or_default();
@@ -239,6 +271,32 @@ fn current_condition(block: &BlockContext<'_>, artifacts: &AnalysisArtifacts) ->
 pub(crate) fn record_throw(artifacts: &mut AnalysisArtifacts, block: &BlockContext<'_>, exception: Word, span: Span) {
     let condition = current_condition(block, artifacts);
     artifacts.throw_conditions.entry((exception, span)).or_default().push(condition);
+}
+
+pub(crate) fn report_global<A: Arena>(context: &mut Context<'_, '_, A>, block: &BlockContext<'_>) {
+    if !context.settings.check_throws_in_global_scope || context.throws_inference {
+        return;
+    }
+    for (exception, spans) in &block.possibly_thrown_exceptions {
+        let ignored = context
+            .settings
+            .unchecked_exception_classes_in_global_scope
+            .iter()
+            .any(|name| exception.as_bytes().eq_ignore_ascii_case(name.as_bytes()))
+            || context.settings.unchecked_exceptions_in_global_scope.iter().any(|name| {
+                exception.as_bytes().eq_ignore_ascii_case(name.as_bytes())
+                    || context.codebase.is_instance_of(exception.as_bytes(), name.as_bytes())
+            });
+        if ignored {
+            continue;
+        }
+        let mut issue = mago_reporting::Issue::error(format!("Uncaught exception `{exception}` in top-level code."));
+        for span in spans {
+            issue = issue
+                .with_annotation(mago_reporting::Annotation::primary(*span).with_message("Exception may escape here"));
+        }
+        context.collector.report_with_code(crate::code::IssueCode::UncaughtThrowInGlobalScope, issue);
+    }
 }
 
 pub(crate) fn propagate<A>(
@@ -329,7 +387,7 @@ impl ThrowsSummaries {
             }
         }
         for (key, summary) in &mut self.contexts {
-            if codebase.get_function_like(&key.function).is_some_and(|metadata| files.contains(&metadata.span.file_id))
+            if function_metadata(codebase, &key.function).is_some_and(|metadata| files.contains(&metadata.span.file_id))
             {
                 *summary = FunctionThrowsSummary::default();
             }
@@ -372,7 +430,7 @@ impl ThrowsSummaries {
             summaries.yii2 = yii2::Facts::collect(files, codebase, parser_settings);
         }
         summaries.functions.retain(|id, _| codebase.get_function_like(id).is_some());
-        summaries.contexts.retain(|key, _| codebase.get_function_like(&key.function).is_some());
+        summaries.contexts.retain(|key, _| function_metadata(codebase, &key.function).is_some());
         // Removed throws must not survive by circulating through cached recursive summaries.
         summaries.reset_effects(codebase, &affected);
         let mut inference_settings = settings.clone();
@@ -405,7 +463,8 @@ impl ThrowsSummaries {
                 !codebase.get_function_like(id).is_some_and(|metadata| work.contains(&metadata.span.file_id))
             });
             next.contexts.retain(|key, _| {
-                !codebase.get_function_like(&key.function).is_some_and(|metadata| work.contains(&metadata.span.file_id))
+                !function_metadata(codebase, &key.function)
+                    .is_some_and(|metadata| work.contains(&metadata.span.file_id))
             });
             let mut requested_contexts = HashSet::default();
             for file in files.iter().filter(|file| work.contains(&file.id)) {
@@ -443,7 +502,7 @@ impl ThrowsSummaries {
                 if context_counts.get(&specialization.function).copied().unwrap_or_default() >= 64 {
                     continue;
                 }
-                let Some(metadata) = codebase.get_function_like(&specialization.function) else {
+                let Some(metadata) = function_metadata(codebase, &specialization.function) else {
                     continue;
                 };
                 let Some(file) = files_by_id.get(&metadata.span.file_id) else {
@@ -493,7 +552,7 @@ impl ThrowsSummaries {
             }
             for (key, summary) in &next.contexts {
                 if summaries.contexts.get(key) != Some(summary)
-                    && let Some(metadata) = codebase.get_function_like(&key.function)
+                    && let Some(metadata) = function_metadata(codebase, &key.function)
                 {
                     changed_contexts.insert(key.clone(), summaries.contexts.get(key).cloned());
                     if trace_enabled && (32..36).contains(&round) && work.len() <= 16 {

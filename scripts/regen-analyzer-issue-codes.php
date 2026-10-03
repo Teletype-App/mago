@@ -55,6 +55,8 @@ final class AnalyzerCodeModuleGenerator
         'invalid-type-cast',
         'invalid-global',
         'invalid-throw',
+        'invalid-throws-type',
+        'uncaught-throw-in-global-scope',
         'invalid-unset',
         'invalid-callable',
         'invalid-named-argument',

@@ -111,6 +111,15 @@ pub struct AnalyzerConfiguration {
     /// Whether to check for thrown exceptions.
     pub check_throws: bool,
 
+    /// Report exceptions escaping top-level code, independently of function PHPDoc checks.
+    pub check_throws_in_global_scope: bool,
+
+    /// Ignore these exceptions and descendants only in top-level code.
+    pub unchecked_exceptions_in_global_scope: Vec<String>,
+
+    /// Ignore these exact exception classes only in top-level code.
+    pub unchecked_exception_classes_in_global_scope: Vec<String>,
+
     /// Exceptions to ignore including all subclasses (hierarchy-aware).
     ///
     /// When an exception class is listed here, any exception of that class or any of its
@@ -458,6 +467,17 @@ impl AnalyzerConfiguration {
             memoize_properties: self.memoize_properties,
             allow_possibly_undefined_array_keys: self.allow_possibly_undefined_array_keys,
             check_throws: self.check_throws,
+            check_throws_in_global_scope: self.check_throws_in_global_scope,
+            unchecked_exceptions_in_global_scope: self
+                .unchecked_exceptions_in_global_scope
+                .iter()
+                .map(|s| mago_word::word(s.as_bytes()))
+                .collect(),
+            unchecked_exception_classes_in_global_scope: self
+                .unchecked_exception_classes_in_global_scope
+                .iter()
+                .map(|s| mago_word::word(s.as_bytes()))
+                .collect(),
             unchecked_exceptions: self.unchecked_exceptions.iter().map(|s| mago_word::word(s.as_bytes())).collect(),
             unchecked_exception_classes: self
                 .unchecked_exception_classes
@@ -518,6 +538,9 @@ impl Default for AnalyzerConfiguration {
             memoize_properties: defaults.memoize_properties,
             allow_possibly_undefined_array_keys: defaults.allow_possibly_undefined_array_keys,
             check_throws: defaults.check_throws,
+            check_throws_in_global_scope: defaults.check_throws_in_global_scope,
+            unchecked_exceptions_in_global_scope: vec![],
+            unchecked_exception_classes_in_global_scope: vec![],
             unchecked_exceptions: vec![],
             unchecked_exception_classes: vec![],
             check_missing_override: defaults.check_missing_override,
