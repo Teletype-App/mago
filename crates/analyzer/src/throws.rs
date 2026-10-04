@@ -737,6 +737,14 @@ impl ThrowsSummaries {
                     changed.insert(metadata.span.file_id);
                 }
             }
+            for (id, summary) in &summaries.functions {
+                if !next.functions.contains_key(id) {
+                    changed_functions.insert(*id, Some(summary.clone()));
+                    if let Some(metadata) = codebase.get_function_like(id) {
+                        changed.insert(metadata.span.file_id);
+                    }
+                }
+            }
             for (key, summary) in &next.contexts {
                 if summaries.contexts.get(key) != Some(summary)
                     && let Some(metadata) = function_metadata(codebase, &key.function)
@@ -746,6 +754,17 @@ impl ThrowsSummaries {
                         tracing::trace!(function = ?key.function, arguments = ?key.arguments, previous = ?summaries.contexts.get(key), current = ?summary, "Changed throws context summary");
                     }
                     changed.insert(metadata.span.file_id);
+                }
+            }
+            // New requests can evict a previously admitted specialization at
+            // the budget. Readers of its absence must fall back to the general
+            // effect rather than keep a result computed from the removed key.
+            for (key, summary) in &summaries.contexts {
+                if !next.contexts.contains_key(key) {
+                    changed_contexts.insert(key.clone(), Some(summary.clone()));
+                    if let Some(metadata) = function_metadata(codebase, &key.function) {
+                        changed.insert(metadata.span.file_id);
+                    }
                 }
             }
             work = effect_dependencies

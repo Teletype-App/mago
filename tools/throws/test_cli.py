@@ -130,6 +130,54 @@ function leaf(int $value): void {
     print('Edited calls preserve fresh diagnostics across cached specialization budgets: passed', flush=True)
 
 
+def late_context_eviction_updates_transitive_callers(binary):
+    for threads in (1, 4):
+        with tempfile.TemporaryDirectory(prefix='mago-native-context-eviction-') as temp:
+            workspace = Path(temp)
+            (workspace / 'cases').mkdir()
+            (workspace / 'dependencies').mkdir()
+            write_config(workspace)
+            (workspace / 'cases/leaf.php').write_text('''<?php
+function a_leaf(object $value): void {
+    if ($value instanceof First) { throw new DomainException(); }
+    throw new LengthException();
+}
+function force(): void { try { wave(); } catch (DomainException) {} }
+''')
+            for index in range(64):
+                (workspace / 'cases' / f'caller_{index:02}.php').write_text(
+                    f'<?php final class Z{index:02} {{}} function caller_{index:02}(): void {{ a_leaf(new Z{index:02}()); }}\n')
+            (workspace / 'cases/reveal.php').write_text('''<?php
+class First extends DomainException {}
+function reveal(): void {
+    try { wave(); } catch (DomainException $error) { a_leaf($error); }
+}
+function wave(): void { trigger(); }
+function trigger(): void { throw new First(); }
+''')
+            observer = workspace / 'cases/observer.php'
+            observer.write_text('<?php function observer(): void { caller_62(); }\n')
+            # The caught type changes from DomainException to First later in
+            # inference. This evicts Z62's context; its caller must then read the
+            # general leaf effect. Check the next hop, which consumes summaries.
+            issues = analyze(binary, workspace, threads=threads)
+            found = missing(issues, 'observer')
+            assert len(found) == 2, (threads, [issue['message'] for issue in found])
+            for exception in ('DomainException', 'LengthException'):
+                assert any(exception in issue['message'] for issue in found)
+            source = '''<?php
+/**
+ * @throws \\DomainException
+ * @throws \\LengthException
+ */
+function observer(): void { caller_62(); }
+'''
+            observer.write_text(source)
+            analyze(binary, workspace, '--fix', '--potentially-unsafe', threads=threads)
+            assert observer.read_text() == source, 'Eviction must not erase the general fallback contract'
+    print('Late context eviction updates transitive diagnostics and preserves PHPDoc: passed', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mago', required=True)
@@ -137,6 +185,7 @@ def main():
     binary = str(Path(args.mago).resolve())
     corpus = Path(__file__).resolve().parent
     workers_preserve_context_budget(binary)
+    late_context_eviction_updates_transitive_callers(binary)
     cache_budget_edits_match_fresh_inference(binary)
     cache_shape_contexts(binary)
     # Check disputed callback effects against PHP execution, independently of both analyzers.
