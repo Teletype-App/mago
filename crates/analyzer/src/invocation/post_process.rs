@@ -104,9 +104,6 @@ where
     {
         artifacts.throws_dependencies.insert(metadata.span.file_id);
     }
-    if context.settings.throws_enabled() {
-        artifacts.throws_summary_reads.insert(crate::throws::SummaryKey::Function(summary_identifier));
-    }
     let specialization = if context.settings.throws_enabled() {
         crate::throws::invocation_context(context, invoication, parameters)
     } else {
@@ -114,9 +111,6 @@ where
     };
     if let Some(specialization) = &specialization {
         artifacts.throws_context_requests.insert(specialization.clone());
-        // A missing specialization falls back to the general summary. Track
-        // both reads so registering the context also invalidates that fallback.
-        artifacts.throws_summary_reads.insert(crate::throws::SummaryKey::Context(specialization.clone()));
     }
     let local_closure = if matches!(summary_identifier, FunctionLikeIdentifier::Closure(_)) {
         artifacts.inferred_throws.get(&summary_identifier).cloned()
@@ -125,10 +119,20 @@ where
     };
     let inferred = local_closure.as_ref().or_else(|| {
         context.throws_summaries.and_then(|summaries| {
-            specialization
-                .as_ref()
-                .and_then(|key| summaries.contexts.get(key))
-                .or_else(|| summaries.functions.get(&summary_identifier))
+            if let Some(key) = &specialization {
+                if context.throws_inference {
+                    // Track absence too: registering this key invalidates a
+                    // caller that previously fell back to the general effect.
+                    artifacts.throws_summary_reads.insert(crate::throws::SummaryKey::Context(key.clone()));
+                }
+                if let Some(summary) = summaries.contexts.get(key) {
+                    return Some(summary);
+                }
+            }
+            if context.throws_inference {
+                artifacts.throws_summary_reads.insert(crate::throws::SummaryKey::Function(summary_identifier));
+            }
+            summaries.functions.get(&summary_identifier)
         })
     });
     if context.settings.throws_enabled()
@@ -167,7 +171,9 @@ where
             if let Some(metadata) = context.codebase.get_function_like(&child_id) {
                 artifacts.throws_dependencies.insert(metadata.span.file_id);
             }
-            artifacts.throws_summary_reads.insert(crate::throws::SummaryKey::Function(child_id));
+            if context.throws_inference {
+                artifacts.throws_summary_reads.insert(crate::throws::SummaryKey::Function(child_id));
+            }
             if let Some(summary) = summaries.functions.get(&child_id) {
                 crate::throws::propagate(context, block_context, artifacts, invoication, summary, parameters, child_id);
                 if !summary.unresolved_calls.is_empty() {
@@ -294,7 +300,9 @@ where
                     continue;
                 };
                 artifacts.throws_dependencies.insert(target_metadata.span.file_id);
-                artifacts.throws_summary_reads.insert(crate::throws::SummaryKey::Function(target));
+                if context.throws_inference {
+                    artifacts.throws_summary_reads.insert(crate::throws::SummaryKey::Function(target));
+                }
                 if let Some(summary) = summaries.functions.get(&target) {
                     for exception in summary.exceptions.keys() {
                         block_context
