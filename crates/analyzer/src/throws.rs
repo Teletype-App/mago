@@ -389,6 +389,14 @@ struct ContextDependencies {
     requests: HashSet<ThrowsContext>,
 }
 
+#[derive(Clone)]
+struct GeneralInference {
+    dependencies: HashSet<FileId>,
+    effects: HashSet<FileId>,
+    functions: HashMap<FunctionLikeIdentifier, FunctionThrowsSummary>,
+    requests: HashSet<ThrowsContext>,
+}
+
 impl ThrowsSummaries {
     fn reset_effects(&mut self, codebase: &CodebaseMetadata, files: &HashSet<FileId>) {
         for (id, summary) in &mut self.functions {
@@ -475,6 +483,7 @@ impl ThrowsSummaries {
         // Start conservatively for seeded files not visited in this operation.
         let mut effect_dependencies = summaries.dependencies.clone();
         let mut context_dependencies = HashMap::<ThrowsContext, ContextDependencies>::default();
+        let mut general_inferences = HashMap::<FileId, GeneralInference>::default();
         let mut changed_effect_files = summaries.source_files.clone();
         let mut previous_functions: HashMap<FunctionLikeIdentifier, Option<FunctionThrowsSummary>> = HashMap::default();
         let mut previous_contexts: HashMap<ThrowsContext, Option<FunctionThrowsSummary>> = HashMap::default();
@@ -511,6 +520,11 @@ impl ThrowsSummaries {
             let results = round_files
                 .par_iter()
                 .map_init(LocalArena::new, |arena, file| {
+                    if let Some(inference) = general_inferences.get(&file.id)
+                        && inference.effects.is_disjoint(&changed_effect_files)
+                    {
+                        return Ok((file.id, inference.clone(), true));
+                    }
                     let started = trace_enabled.then(std::time::Instant::now);
                     let (program, names) = &parsed_files[&file.id];
                     let analyzer = Analyzer::new(arena, file, names, codebase, registry, inference_settings.clone())
@@ -526,16 +540,26 @@ impl ThrowsSummaries {
                     if let Some(started) = started {
                         tracing::trace!(file = %mago_bytes::BytesDisplay(&file.name), elapsed = ?started.elapsed(), "Inferred general throws summaries");
                     }
-                    Ok::<_, AnalysisError>((file.id, dependencies, effects, artifacts.inferred_throws, artifacts.throws_context_requests))
+                    Ok::<_, AnalysisError>((file.id, GeneralInference {
+                        dependencies,
+                        effects,
+                        functions: artifacts.inferred_throws,
+                        requests: artifacts.throws_context_requests,
+                    }, false))
                 })
                 .collect::<Vec<_>>();
             // Indexed collection preserves file/error order independently of workers.
+            let mut reused_files = 0;
             for result in results {
-                let (file, dependencies, effects, functions, contexts) = result?;
-                next.dependencies.insert(file, dependencies);
-                effect_dependencies.insert(file, effects);
-                next.functions.extend(functions);
-                requested_contexts.extend(contexts);
+                let (file, inference, reused) = result?;
+                reused_files += usize::from(reused);
+                if !reused {
+                    general_inferences.insert(file, inference.clone());
+                }
+                next.dependencies.insert(file, inference.dependencies);
+                effect_dependencies.insert(file, inference.effects);
+                next.functions.extend(inference.functions);
+                requested_contexts.extend(inference.requests);
             }
             requested_contexts.extend(summaries.contexts.keys().cloned());
             let mut pending = requested_contexts.into_iter().collect::<std::collections::BTreeSet<_>>();
@@ -566,6 +590,7 @@ impl ThrowsSummaries {
                         summaries.dependencies.clear();
                         effect_dependencies.clear();
                         context_dependencies.clear();
+                        general_inferences.clear();
                         changed_effect_files.clone_from(&summaries.source_files);
                         work = summaries.source_files.clone();
                         previous_functions.clear();
@@ -679,7 +704,7 @@ impl ThrowsSummaries {
                 }
                 next.contexts.insert(specialization, summary);
             }
-            tracing::trace!(round, inferred_contexts, reused_contexts, contexts = next.contexts.len(), elapsed = ?round_started.elapsed(), "Completed throws inference round");
+            tracing::trace!(round, inferred_contexts, reused_contexts, reused_files, contexts = next.contexts.len(), elapsed = ?round_started.elapsed(), "Completed throws inference round");
             if next == summaries {
                 return Ok(next);
             }
@@ -725,6 +750,7 @@ impl ThrowsSummaries {
                     previous_contexts.get(key).is_some_and(|previous| previous.as_ref() == next.contexts.get(key))
                 });
             if reverses_previous_round {
+                general_inferences.clear();
                 // New specializations can inherit general effects before their callees are registered.
                 // Recompute oscillating summaries from empty effects with their keys retained.
                 // Known bodies, external contracts and unresolved calls are analyzed again normally.
