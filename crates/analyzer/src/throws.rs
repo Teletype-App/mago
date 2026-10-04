@@ -699,11 +699,15 @@ impl ThrowsSummaries {
                 let Some(result) = ready.remove(&specialization) else {
                     continue;
                 };
-                let (summary, dependencies, reads, requests, elapsed, reused) = result?;
+                let (summary, dependencies, summary_keys, requests, elapsed, reused) = result?;
                 reused_contexts += usize::from(reused);
                 context_dependencies.insert(
                     specialization.clone(),
-                    ContextDependencies { files: dependencies.clone(), reads, requests: requests.clone() },
+                    ContextDependencies {
+                        files: dependencies.clone(),
+                        reads: summary_keys,
+                        requests: requests.clone(),
+                    },
                 );
                 next.dependencies.entry(file.id).or_default().extend(dependencies.iter().copied());
                 effect_dependencies.entry(file.id).or_default().extend(dependencies);
