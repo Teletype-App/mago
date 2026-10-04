@@ -96,6 +96,40 @@ function relay(callable $callback, int $depth): void {
         print('Worker count preserves nested calls and specialization-budget diagnostics: passed', flush=True)
 
 
+def cache_budget_edits_match_fresh_inference(binary):
+    for initial_calls in (1, 64):
+        for threads in (1, 4):
+            with tempfile.TemporaryDirectory(prefix='mago-native-context-cache-') as temp:
+                workspace = Path(temp)
+                (workspace / 'cases').mkdir()
+                (workspace / 'dependencies').mkdir()
+                write_config(workspace)
+                (workspace / 'cases/leaf.php').write_text('''<?php
+function leaf(int $value): void {
+    if ($value < 100) { throw new DomainException(); }
+    throw new LengthException();
+}
+''')
+                callers = workspace / 'cases/callers.php'
+
+                def source(start, count):
+                    return '<?php\n' + ''.join(f'function caller_{index:02}(): void {{ leaf({start + index}); }}\n' for index in range(count))
+
+                # Replacing arguments must not let obsolete specializations
+                # crowd out current calls, even if the old cache was below budget.
+                callers.write_text(source(0, initial_calls))
+                analyze(binary, workspace, '--throws-cache', 'state.json', threads=threads)
+                callers.write_text(source(100, 64))
+                fresh = analyze(binary, workspace, threads=threads)
+                for caller in ('caller_00', 'caller_63'):
+                    assert len(missing(fresh, caller)) == 1
+                    assert 'LengthException' in missing(fresh, caller)[0]['message']
+                changed = analyze(binary, workspace, '--throws-cache', 'state.json', threads=threads)
+                assert signature(changed) == signature(fresh), (initial_calls, threads, sorted(set(signature(changed)) - set(signature(fresh))))
+                assert signature(analyze(binary, workspace, '--throws-cache', 'state.json', threads=threads)) == signature(fresh)
+    print('Edited calls preserve fresh diagnostics across cached specialization budgets: passed', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mago', required=True)
@@ -103,6 +137,7 @@ def main():
     binary = str(Path(args.mago).resolve())
     corpus = Path(__file__).resolve().parent
     workers_preserve_context_budget(binary)
+    cache_budget_edits_match_fresh_inference(binary)
     cache_shape_contexts(binary)
     # Check disputed callback effects against PHP execution, independently of both analyzers.
     runtime = command([

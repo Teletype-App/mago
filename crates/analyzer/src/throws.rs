@@ -143,6 +143,8 @@ pub struct ThrowsContext {
     pub arguments: Vec<(usize, TUnion)>,
 }
 
+const MAX_THROWS_CONTEXTS: usize = 64;
+
 pub(crate) fn invocation_context<A>(
     context: &Context<'_, '_, A>,
     invocation: &Invocation<'_, '_, '_>,
@@ -427,8 +429,24 @@ impl ThrowsSummaries {
         affected: Option<&HashSet<FileId>>,
     ) -> Result<Self, AnalysisError> {
         let source_files = files.iter().map(|file| file.id).collect::<HashSet<_>>();
+        let mut incremental = affected.is_some_and(|files| !files.is_empty())
+            && (!summaries.functions.is_empty() || !summaries.contexts.is_empty());
         let affected = affected.cloned().unwrap_or_else(|| source_files.clone());
         summaries.source_files = source_files;
+        if incremental {
+            let mut counts = HashMap::<FunctionLikeIdentifier, usize>::default();
+            if summaries.contexts.keys().any(|key| {
+                let count = counts.entry(key.function).or_default();
+                *count += 1;
+                *count >= MAX_THROWS_CONTEXTS
+            }) {
+                // Cached keys can include calls that the edit removed. At the
+                // budget, keeping them changes which current calls specialize.
+                tracing::debug!("Recomputing throws after edits to a cache with a saturated context budget");
+                drop(summaries);
+                return Self::infer(files, codebase, registry, settings, parser_settings);
+            }
+        }
         if registry.yii2_throws && !affected.is_empty() {
             summaries.yii2 = yii2::Facts::collect(files, codebase, parser_settings);
         }
@@ -449,7 +467,7 @@ impl ThrowsSummaries {
         let mut work = affected;
         let mut previous_functions: HashMap<FunctionLikeIdentifier, Option<FunctionThrowsSummary>> = HashMap::default();
         let mut previous_contexts: HashMap<ThrowsContext, Option<FunctionThrowsSummary>> = HashMap::default();
-        loop {
+        'inference: loop {
             if work.is_empty() {
                 return Ok(summaries);
             }
@@ -521,7 +539,24 @@ impl ThrowsSummaries {
                     ready.remove(&specialization);
                     continue;
                 }
-                if context_counts.get(&specialization.function).copied().unwrap_or_default() >= 64 {
+                if context_counts.get(&specialization.function).copied().unwrap_or_default() >= MAX_THROWS_CONTEXTS {
+                    if incremental {
+                        // An edit can also exhaust a previously unsaturated
+                        // budget. Retry without historical keys or effects.
+                        tracing::debug!(
+                            round,
+                            "Recomputing throws after reaching the context budget during cache reuse"
+                        );
+                        summaries.functions.clear();
+                        summaries.contexts.clear();
+                        summaries.dependencies.clear();
+                        work = summaries.source_files.clone();
+                        previous_functions.clear();
+                        previous_contexts.clear();
+                        incremental = false;
+                        round = 0;
+                        continue 'inference;
+                    }
                     ready.remove(&specialization);
                     continue;
                 }
@@ -543,7 +578,8 @@ impl ThrowsSummaries {
                                 .filter(|key| {
                                     !ready.contains_key(*key)
                                         && !next.contexts.contains_key(*key)
-                                        && context_counts.get(&key.function).copied().unwrap_or_default() < 64
+                                        && context_counts.get(&key.function).copied().unwrap_or_default()
+                                            < MAX_THROWS_CONTEXTS
                                         && function_metadata(codebase, &key.function)
                                             .is_some_and(|metadata| files_by_id.contains_key(&metadata.span.file_id))
                                 })
