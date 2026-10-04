@@ -134,7 +134,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           test "$(find dist -type f | wc -l)" -eq 7
-          gh release create "$RELEASE_VERSION" dist/* --verify-tag --draft --title "Teletype Mago $RELEASE_VERSION" --generate-notes
+          gh release create "$RELEASE_VERSION" dist/* --verify-tag --draft --title "Mago $RELEASE_VERSION" --notes-file .github/release-notes.md
           gh release edit "$RELEASE_VERSION" --draft=false --latest
       - uses: shivammathur/setup-php@v2
         with:
