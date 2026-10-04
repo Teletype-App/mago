@@ -566,7 +566,7 @@ impl ThrowsSummaries {
                         summaries.dependencies.clear();
                         effect_dependencies.clear();
                         context_dependencies.clear();
-                        changed_effect_files = summaries.source_files.clone();
+                        changed_effect_files.clone_from(&summaries.source_files);
                         work = summaries.source_files.clone();
                         previous_functions.clear();
                         previous_contexts.clear();
@@ -713,8 +713,8 @@ impl ThrowsSummaries {
                 .filter(|(_, callees)| !callees.is_disjoint(&changed))
                 .map(|(file, _)| *file)
                 .collect();
-            changed_effect_files = changed.clone();
-            work.extend(changed);
+            work.extend(changed.iter().copied());
+            changed_effect_files = changed;
             let reverses_previous_round = (!changed_functions.is_empty() || !changed_contexts.is_empty())
                 && changed_functions.len() == previous_functions.len()
                 && changed_contexts.len() == previous_contexts.len()
