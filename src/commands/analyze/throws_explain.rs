@@ -1,3 +1,4 @@
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use mago_analyzer::throws::{ConditionValue, FunctionThrowsSummary, ThrowsSummaries};
@@ -48,7 +49,11 @@ pub(super) fn write(path: &Path, summaries: &ThrowsSummaries, database: &ReadDat
         .map_err(|error| Error::InvalidArgument(format!("Cannot create throws explanation directory: {error}")))?;
     let temporary = tempfile::NamedTempFile::new_in(parent)
         .map_err(|error| Error::InvalidArgument(format!("Cannot create throws explanation: {error}")))?;
-    serde_json::to_writer_pretty(temporary.as_file(), &document)?;
+    {
+        let mut writer = BufWriter::new(temporary.as_file());
+        serde_json::to_writer_pretty(&mut writer, &document)?;
+        writer.flush().map_err(|error| Error::InvalidArgument(format!("Cannot write throws explanation: {error}")))?;
+    }
     temporary
         .persist(path)
         .map_err(|error| Error::InvalidArgument(format!("Cannot save throws explanation: {error}")))?;

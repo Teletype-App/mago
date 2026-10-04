@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use foldhash::{HashMap, HashSet};
@@ -154,8 +154,12 @@ impl ThrowsCache {
     }
 
     pub fn save(&self, summaries: &ThrowsSummaries) {
+        let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
         if let Err(error) = self.write(summaries) {
             tracing::warn!("Cannot write throws cache: {error}");
+        }
+        if let Some(started) = started {
+            tracing::trace!(elapsed = ?started.elapsed(), "Throws cache write completed");
         }
     }
 
@@ -181,8 +185,11 @@ impl ThrowsCache {
                 .collect(),
         };
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer(temporary.as_file_mut(), &stored)?;
-        temporary.flush()?;
+        {
+            let mut writer = BufWriter::new(temporary.as_file_mut());
+            serde_json::to_writer(&mut writer, &stored)?;
+            writer.flush()?;
+        }
         temporary.persist(&self.path)?;
         Ok(())
     }
