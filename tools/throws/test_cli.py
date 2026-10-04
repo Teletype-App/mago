@@ -78,10 +78,9 @@ def workers_preserve_context_budget(binary):
         # The nested call discovers an earlier context after later callback
         # contexts are already queued. There are more contexts than the budget.
         (workspace / 'cases/relay.php').write_text('''<?php
-function aaa(): void { throw new LengthException(); }
 /** @param callable(): void $callback */
 function relay(callable $callback, int $depth): void {
-    if ($depth === 0) { $callback(); } else { relay(aaa(...), 0); }
+    if ($depth === 0) { $callback(); } else { relay($callback, 0); }
 }
 ''')
         calls = '<?php\n'
@@ -90,7 +89,7 @@ function relay(callable $callback, int $depth): void {
             calls += f'function caller_{index:02}(): void {{ relay(callback_{index:02}(...), 1); }}\n'
         (workspace / 'cases/callers.php').write_text(calls)
         serial = analyze(binary, workspace)
-        assert 'LengthException' in missing(serial, 'caller_00')[0]['message']
+        assert 'DomainException' in missing(serial, 'caller_00')[0]['message']
         parallel = analyze(binary, workspace, '--throws-cache', 'state.json', threads=4)
         assert signature(parallel) == signature(serial)
         assert signature(analyze(binary, workspace, '--throws-cache', 'state.json')) == signature(serial)
