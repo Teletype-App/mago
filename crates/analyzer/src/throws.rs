@@ -465,6 +465,10 @@ impl ThrowsSummaries {
         let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
         let mut round = 0;
         let mut work = affected;
+        // Metadata references invalidate persisted results after source edits,
+        // but metadata stays fixed while body effects reach their fixed point.
+        // Start conservatively for seeded files not visited in this operation.
+        let mut effect_dependencies = summaries.dependencies.clone();
         let mut previous_functions: HashMap<FunctionLikeIdentifier, Option<FunctionThrowsSummary>> = HashMap::default();
         let mut previous_contexts: HashMap<ThrowsContext, Option<FunctionThrowsSummary>> = HashMap::default();
         'inference: loop {
@@ -509,18 +513,20 @@ impl ThrowsSummaries {
                     let artifacts = analyzer.analyze_with_artifacts(program, &mut result);
                     arena.reset();
                     let artifacts = artifacts?;
-                    let mut dependencies = artifacts.throws_dependencies;
+                    let effects = artifacts.throws_dependencies;
+                    let mut dependencies = effects.clone();
                     collect_reference_files(&result.symbol_references, codebase, &mut dependencies);
                     if let Some(started) = started {
                         tracing::trace!(file = %mago_bytes::BytesDisplay(&file.name), elapsed = ?started.elapsed(), "Inferred general throws summaries");
                     }
-                    Ok::<_, AnalysisError>((file.id, dependencies, artifacts.inferred_throws, artifacts.throws_context_requests))
+                    Ok::<_, AnalysisError>((file.id, dependencies, effects, artifacts.inferred_throws, artifacts.throws_context_requests))
                 })
                 .collect::<Vec<_>>();
             // Indexed collection preserves file/error order independently of workers.
             for result in results {
-                let (file, dependencies, functions, contexts) = result?;
+                let (file, dependencies, effects, functions, contexts) = result?;
                 next.dependencies.insert(file, dependencies);
+                effect_dependencies.insert(file, effects);
                 next.functions.extend(functions);
                 requested_contexts.extend(contexts);
             }
@@ -550,6 +556,7 @@ impl ThrowsSummaries {
                         summaries.functions.clear();
                         summaries.contexts.clear();
                         summaries.dependencies.clear();
+                        effect_dependencies.clear();
                         work = summaries.source_files.clone();
                         previous_functions.clear();
                         previous_contexts.clear();
@@ -631,7 +638,8 @@ impl ThrowsSummaries {
                     continue;
                 };
                 let (summary, dependencies, requests, elapsed) = result?;
-                next.dependencies.entry(file.id).or_default().extend(dependencies);
+                next.dependencies.entry(file.id).or_default().extend(dependencies.iter().copied());
+                effect_dependencies.entry(file.id).or_default().extend(dependencies);
                 pending.extend(requests.into_iter().filter(|key| !next.contexts.contains_key(key)));
                 *context_counts.entry(specialization.function).or_default() += 1;
                 inferred_contexts += 1;
@@ -669,8 +677,7 @@ impl ThrowsSummaries {
                     changed.insert(metadata.span.file_id);
                 }
             }
-            work = next
-                .dependencies
+            work = effect_dependencies
                 .iter()
                 .filter(|(_, callees)| !callees.is_disjoint(&changed))
                 .map(|(file, _)| *file)

@@ -10,7 +10,7 @@ use mago_database::file::{FileId, FileType};
 use mago_database::{DatabaseReader, ReadDatabase};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA: u32 = 8;
+const SCHEMA: u32 = 9;
 const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
