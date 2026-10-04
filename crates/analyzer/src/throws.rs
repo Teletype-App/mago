@@ -145,6 +145,12 @@ pub struct ThrowsContext {
 
 const MAX_THROWS_CONTEXTS: usize = 64;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum SummaryKey {
+    Function(FunctionLikeIdentifier),
+    Context(ThrowsContext),
+}
+
 pub(crate) fn invocation_context<A>(
     context: &Context<'_, '_, A>,
     invocation: &Invocation<'_, '_, '_>,
@@ -386,6 +392,7 @@ pub struct ThrowsSummaries {
 
 struct ContextDependencies {
     files: HashSet<FileId>,
+    reads: HashSet<SummaryKey>,
     requests: HashSet<ThrowsContext>,
 }
 
@@ -393,6 +400,7 @@ struct ContextDependencies {
 struct GeneralInference {
     dependencies: HashSet<FileId>,
     effects: HashSet<FileId>,
+    reads: HashSet<SummaryKey>,
     functions: HashMap<FunctionLikeIdentifier, FunctionThrowsSummary>,
     requests: HashSet<ThrowsContext>,
 }
@@ -484,7 +492,7 @@ impl ThrowsSummaries {
         let mut effect_dependencies = summaries.dependencies.clone();
         let mut context_dependencies = HashMap::<ThrowsContext, ContextDependencies>::default();
         let mut general_inferences = HashMap::<FileId, GeneralInference>::default();
-        let mut changed_effect_files = summaries.source_files.clone();
+        let mut changed_summaries = HashSet::<SummaryKey>::default();
         let mut previous_functions: HashMap<FunctionLikeIdentifier, Option<FunctionThrowsSummary>> = HashMap::default();
         let mut previous_contexts: HashMap<ThrowsContext, Option<FunctionThrowsSummary>> = HashMap::default();
         'inference: loop {
@@ -521,7 +529,7 @@ impl ThrowsSummaries {
                 .par_iter()
                 .map_init(LocalArena::new, |arena, file| {
                     if let Some(inference) = general_inferences.get(&file.id)
-                        && inference.effects.is_disjoint(&changed_effect_files)
+                        && inference.reads.is_disjoint(&changed_summaries)
                     {
                         return Ok((file.id, inference.clone(), true));
                     }
@@ -543,6 +551,7 @@ impl ThrowsSummaries {
                     Ok::<_, AnalysisError>((file.id, GeneralInference {
                         dependencies,
                         effects,
+                        reads: artifacts.throws_summary_reads,
                         functions: artifacts.inferred_throws,
                         requests: artifacts.throws_context_requests,
                     }, false))
@@ -591,7 +600,7 @@ impl ThrowsSummaries {
                         effect_dependencies.clear();
                         context_dependencies.clear();
                         general_inferences.clear();
-                        changed_effect_files.clone_from(&summaries.source_files);
+                        changed_summaries.clear();
                         work = summaries.source_files.clone();
                         previous_functions.clear();
                         previous_contexts.clear();
@@ -646,12 +655,13 @@ impl ThrowsSummaries {
                             // The priority queue still admits every key in the same
                             // order, including at the specialization budget.
                             if let Some(dependencies) = context_dependencies.get(key)
-                                && dependencies.files.is_disjoint(&changed_effect_files)
+                                && dependencies.reads.is_disjoint(&changed_summaries)
                                 && let Some(summary) = summaries.contexts.get(key)
                             {
                                 return Some(Ok((
                                     summary.clone(),
                                     dependencies.files.clone(),
+                                    dependencies.reads.clone(),
                                     dependencies.requests.clone(),
                                     None,
                                     true,
@@ -674,6 +684,7 @@ impl ThrowsSummaries {
                                 (
                                     summary,
                                     artifacts.throws_dependencies,
+                                    artifacts.throws_summary_reads,
                                     artifacts.throws_context_requests,
                                     started.map(|start| start.elapsed()),
                                     false,
@@ -688,11 +699,11 @@ impl ThrowsSummaries {
                 let Some(result) = ready.remove(&specialization) else {
                     continue;
                 };
-                let (summary, dependencies, requests, elapsed, reused) = result?;
+                let (summary, dependencies, reads, requests, elapsed, reused) = result?;
                 reused_contexts += usize::from(reused);
                 context_dependencies.insert(
                     specialization.clone(),
-                    ContextDependencies { files: dependencies.clone(), requests: requests.clone() },
+                    ContextDependencies { files: dependencies.clone(), reads, requests: requests.clone() },
                 );
                 next.dependencies.entry(file.id).or_default().extend(dependencies.iter().copied());
                 effect_dependencies.entry(file.id).or_default().extend(dependencies);
@@ -738,8 +749,13 @@ impl ThrowsSummaries {
                 .filter(|(_, callees)| !callees.is_disjoint(&changed))
                 .map(|(file, _)| *file)
                 .collect();
-            work.extend(changed.iter().copied());
-            changed_effect_files = changed;
+            changed_summaries = changed_functions
+                .keys()
+                .copied()
+                .map(SummaryKey::Function)
+                .chain(changed_contexts.keys().cloned().map(SummaryKey::Context))
+                .collect();
+            work.extend(changed);
             let reverses_previous_round = (!changed_functions.is_empty() || !changed_contexts.is_empty())
                 && changed_functions.len() == previous_functions.len()
                 && changed_contexts.len() == previous_contexts.len()

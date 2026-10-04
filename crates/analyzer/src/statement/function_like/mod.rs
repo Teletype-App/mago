@@ -385,6 +385,7 @@ where
     parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
     parent_artifacts.throws_dependencies.extend(std::mem::take(&mut artifacts.throws_dependencies));
     parent_artifacts.throws_context_requests.extend(std::mem::take(&mut artifacts.throws_context_requests));
+    parent_artifacts.throws_summary_reads.extend(std::mem::take(&mut artifacts.throws_summary_reads));
     parent_artifacts.inferred_throws.extend(std::mem::take(&mut artifacts.inferred_throws));
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
     parent_artifacts.pending_readonly_property_writes.append(&mut artifacts.pending_readonly_property_writes);

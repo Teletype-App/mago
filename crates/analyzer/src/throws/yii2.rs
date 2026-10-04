@@ -401,6 +401,7 @@ pub(crate) fn collect_property<A>(
         };
         artifacts.throws_dependencies.insert(metadata.span.file_id);
         let summary = summaries.functions.get(&target);
+        artifacts.throws_summary_reads.insert(super::SummaryKey::Function(target));
         if let Some(summary) = summary {
             for exception in summary.exceptions.keys() {
                 block.possibly_thrown_exceptions.entry(*exception).or_default().insert(span);

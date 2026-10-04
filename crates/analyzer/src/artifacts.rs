@@ -53,6 +53,7 @@ pub struct AnalysisArtifacts {
     pub(crate) generator_throws: HashMap<(u32, u32), crate::throws::FunctionThrowsSummary>,
     pub(crate) returned_generator_throws: Option<crate::throws::FunctionThrowsSummary>,
     pub(crate) throws_context_requests: HashSet<crate::throws::ThrowsContext>,
+    pub(crate) throws_summary_reads: HashSet<crate::throws::SummaryKey>,
     pub(crate) throw_conditions: HashMap<(Word, Span), Vec<crate::throws::ThrowCondition>>,
     pub(crate) throw_targets: HashMap<
         (Word, Span),
@@ -99,6 +100,7 @@ impl AnalysisArtifacts {
             generator_throws: HashMap::default(),
             returned_generator_throws: None,
             throws_context_requests: HashSet::default(),
+            throws_summary_reads: HashSet::default(),
             throw_conditions: HashMap::default(),
             throw_targets: HashMap::default(),
             throw_parameter_versions: WordMap::default(),

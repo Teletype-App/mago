@@ -106,6 +106,7 @@ pub(crate) fn collect<A>(
                 artifacts.throws_dependencies.insert(metadata.span.file_id);
             }
             let summary = artifacts.inferred_throws.get(&target).or_else(|| summaries.functions.get(&target)).cloned();
+            artifacts.throws_summary_reads.insert(super::SummaryKey::Function(target));
             if let Some(summary) = summary {
                 for exception in summary.exceptions.keys() {
                     block.possibly_thrown_exceptions.entry(*exception).or_default().insert(invocation.span);
