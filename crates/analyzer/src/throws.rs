@@ -54,6 +54,7 @@ use mago_syntax::settings::ParserSettings;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::word;
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -469,26 +470,41 @@ impl ThrowsSummaries {
                     .is_some_and(|metadata| work.contains(&metadata.span.file_id))
             });
             let mut requested_contexts = HashSet::default();
-            for file in files.iter().filter(|file| work.contains(&file.id)) {
-                let started = trace_enabled.then(std::time::Instant::now);
-                let (program, names) = parsed_files.entry(file.id).or_insert_with(|| {
+            let round_files = files.iter().copied().filter(|file| work.contains(&file.id)).collect::<Vec<_>>();
+            // Parsed trees contain immutable slices, so workers can share them while
+            // retaining the local parse arena for the entire inference operation.
+            for file in &round_files {
+                parsed_files.entry(file.id).or_insert_with(|| {
                     let program = parse_file_with_settings(&parse_arena, file, parser_settings);
                     (program, NameResolver::new(&parse_arena).resolve(program))
                 });
-                let arena = LocalArena::new();
-                let analyzer = Analyzer::new(&arena, file, names, codebase, registry, inference_settings.clone())
-                    .with_throws_summaries(&summaries)
-                    .with_throws_inference();
-                let mut result = AnalysisResult::new(SymbolReferences::new());
-                let artifacts = analyzer.analyze_with_artifacts(program, &mut result)?;
-                let mut dependencies = artifacts.throws_dependencies;
-                collect_reference_files(&result.symbol_references, codebase, &mut dependencies);
-                next.dependencies.insert(file.id, dependencies);
-                next.functions.extend(artifacts.inferred_throws);
-                requested_contexts.extend(artifacts.throws_context_requests);
-                if let Some(started) = started {
-                    tracing::trace!(file = %mago_bytes::BytesDisplay(&file.name), elapsed = ?started.elapsed(), "Inferred general throws summaries");
-                }
+            }
+            let results = round_files
+                .par_iter()
+                .map_init(LocalArena::new, |arena, file| {
+                    let started = trace_enabled.then(std::time::Instant::now);
+                    let (program, names) = &parsed_files[&file.id];
+                    let analyzer = Analyzer::new(arena, file, names, codebase, registry, inference_settings.clone())
+                        .with_throws_summaries(&summaries)
+                        .with_throws_inference();
+                    let mut result = AnalysisResult::new(SymbolReferences::new());
+                    let artifacts = analyzer.analyze_with_artifacts(program, &mut result);
+                    arena.reset();
+                    let artifacts = artifacts?;
+                    let mut dependencies = artifacts.throws_dependencies;
+                    collect_reference_files(&result.symbol_references, codebase, &mut dependencies);
+                    if let Some(started) = started {
+                        tracing::trace!(file = %mago_bytes::BytesDisplay(&file.name), elapsed = ?started.elapsed(), "Inferred general throws summaries");
+                    }
+                    Ok::<_, AnalysisError>((file.id, dependencies, artifacts.inferred_throws, artifacts.throws_context_requests))
+                })
+                .collect::<Vec<_>>();
+            // Indexed collection preserves file/error order independently of workers.
+            for result in results {
+                let (file, dependencies, functions, contexts) = result?;
+                next.dependencies.insert(file, dependencies);
+                next.functions.extend(functions);
+                requested_contexts.extend(contexts);
             }
             requested_contexts.extend(summaries.contexts.keys().cloned());
             let mut pending = requested_contexts.into_iter().collect::<std::collections::BTreeSet<_>>();
@@ -497,11 +513,16 @@ impl ThrowsSummaries {
                 *context_counts.entry(key.function).or_default() += 1;
             }
             let mut inferred_contexts = 0;
+            let mut ready = HashMap::default();
+            let workers = rayon::current_num_threads();
+            let batch_size = if workers == 1 { 1 } else { workers.saturating_mul(16) };
             while let Some(specialization) = pending.pop_first() {
                 if next.contexts.contains_key(&specialization) {
+                    ready.remove(&specialization);
                     continue;
                 }
                 if context_counts.get(&specialization.function).copied().unwrap_or_default() >= 64 {
+                    ready.remove(&specialization);
                     continue;
                 }
                 let Some(metadata) = function_metadata(codebase, &specialization.function) else {
@@ -510,27 +531,76 @@ impl ThrowsSummaries {
                 let Some(file) = files_by_id.get(&metadata.span.file_id) else {
                     continue;
                 };
-                let started = trace_enabled.then(std::time::Instant::now);
-                let (program, names) = parsed_files.entry(file.id).or_insert_with(|| {
-                    let program = parse_file_with_settings(&parse_arena, file, parser_settings);
-                    (program, NameResolver::new(&parse_arena).resolve(program))
-                });
-                let arena = LocalArena::new();
-                let mut analyzer = Analyzer::new(&arena, file, names, codebase, registry, inference_settings.clone())
-                    .with_throws_summaries(&summaries)
-                    .with_throws_inference();
-                analyzer.throws_specialization = Some(&specialization);
-                let artifacts =
-                    analyzer.analyze_with_artifacts(program, &mut AnalysisResult::new(SymbolReferences::new()))?;
-                let summary = artifacts.inferred_throws.get(&specialization.function).cloned().unwrap_or_default();
-                next.dependencies.entry(file.id).or_default().extend(artifacts.throws_dependencies);
-                pending.extend(
-                    artifacts.throws_context_requests.into_iter().filter(|key| !next.contexts.contains_key(key)),
-                );
+                if !ready.contains_key(&specialization) {
+                    // Calculate ahead, but commit only in the original priority-queue
+                    // order. Newly discovered earlier keys must still get their turn
+                    // before later keys, especially at the per-function context limit.
+                    // Errors from contexts skipped by that limit are discarded too.
+                    let batch = std::iter::once(specialization.clone())
+                        .chain(
+                            pending
+                                .iter()
+                                .filter(|key| {
+                                    !ready.contains_key(*key)
+                                        && !next.contexts.contains_key(*key)
+                                        && context_counts.get(&key.function).copied().unwrap_or_default() < 64
+                                        && function_metadata(codebase, &key.function)
+                                            .is_some_and(|metadata| files_by_id.contains_key(&metadata.span.file_id))
+                                })
+                                .cloned(),
+                        )
+                        .take(batch_size)
+                        .collect::<Vec<_>>();
+                    for key in &batch {
+                        if let Some(file) = function_metadata(codebase, &key.function)
+                            .and_then(|metadata| files_by_id.get(&metadata.span.file_id))
+                        {
+                            parsed_files.entry(file.id).or_insert_with(|| {
+                                let program = parse_file_with_settings(&parse_arena, file, parser_settings);
+                                (program, NameResolver::new(&parse_arena).resolve(program))
+                            });
+                        }
+                    }
+                    let results = batch
+                        .par_iter()
+                        .map_init(LocalArena::new, |arena, key| {
+                            let started = trace_enabled.then(std::time::Instant::now);
+                            let metadata = function_metadata(codebase, &key.function)?;
+                            let file = files_by_id.get(&metadata.span.file_id)?;
+                            let (program, names) = &parsed_files[&file.id];
+                            let mut analyzer =
+                                Analyzer::new(arena, file, names, codebase, registry, inference_settings.clone())
+                                    .with_throws_summaries(&summaries)
+                                    .with_throws_inference();
+                            analyzer.throws_specialization = Some(key);
+                            let artifacts = analyzer
+                                .analyze_with_artifacts(program, &mut AnalysisResult::new(SymbolReferences::new()));
+                            arena.reset();
+                            Some(artifacts.map(|artifacts| {
+                                let summary = artifacts.inferred_throws.get(&key.function).cloned().unwrap_or_default();
+                                (
+                                    summary,
+                                    artifacts.throws_dependencies,
+                                    artifacts.throws_context_requests,
+                                    started.map(|start| start.elapsed()),
+                                )
+                            }))
+                        })
+                        .collect::<Vec<_>>();
+                    ready.extend(
+                        batch.into_iter().zip(results).filter_map(|(key, result)| result.map(|result| (key, result))),
+                    );
+                }
+                let Some(result) = ready.remove(&specialization) else {
+                    continue;
+                };
+                let (summary, dependencies, requests, elapsed) = result?;
+                next.dependencies.entry(file.id).or_default().extend(dependencies);
+                pending.extend(requests.into_iter().filter(|key| !next.contexts.contains_key(key)));
                 *context_counts.entry(specialization.function).or_default() += 1;
                 inferred_contexts += 1;
-                if let Some(started) = started {
-                    tracing::trace!(function = ?specialization.function, elapsed = ?started.elapsed(), "Inferred throws context");
+                if let Some(elapsed) = elapsed {
+                    tracing::trace!(function = ?specialization.function, elapsed = ?elapsed, "Inferred throws context");
                 }
                 next.contexts.insert(specialization, summary);
             }

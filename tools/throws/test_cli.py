@@ -14,12 +14,12 @@ def command(args, cwd, **kwargs):
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, **kwargs)
 
 
-def analyze(binary, workspace, *args, throws_only=True):
+def analyze(binary, workspace, *args, throws_only=True, threads=1):
     invocation = [
         'prlimit', '--as=1073741824', '--cpu=45',
         'timeout', '--signal=TERM', '--kill-after=5s', '40s',
         binary, '--workspace', str(workspace), '--config', str(workspace / 'mago.toml'),
-        '--threads', '1', '--colors', 'never', 'analyze', '--no-extensions',
+        '--threads', str(threads), '--colors', 'never', 'analyze', '--no-extensions',
         *(['--throws-only'] if throws_only else []),
         *([] if '--fix' in args else ['--reporting-format', 'json']), *args,
     ]
@@ -69,12 +69,41 @@ def cache_shape_contexts(binary):
         print('Callable array-shape contexts persist, reload and invalidate: passed', flush=True)
 
 
+def workers_preserve_context_budget(binary):
+    with tempfile.TemporaryDirectory(prefix='mago-native-context-workers-') as temp:
+        workspace = Path(temp)
+        (workspace / 'cases').mkdir()
+        (workspace / 'dependencies').mkdir()
+        write_config(workspace)
+        # The nested call discovers an earlier context after later callback
+        # contexts are already queued. There are more contexts than the budget.
+        (workspace / 'cases/relay.php').write_text('''<?php
+function aaa(): void { throw new LengthException(); }
+/** @param callable(): void $callback */
+function relay(callable $callback, int $depth): void {
+    if ($depth === 0) { $callback(); } else { relay(aaa(...), 0); }
+}
+''')
+        calls = '<?php\n'
+        for index in range(70):
+            calls += f'function callback_{index:02}(): void {{ throw new DomainException(); }}\n'
+            calls += f'function caller_{index:02}(): void {{ relay(callback_{index:02}(...), 1); }}\n'
+        (workspace / 'cases/callers.php').write_text(calls)
+        serial = analyze(binary, workspace)
+        assert 'LengthException' in missing(serial, 'caller_00')[0]['message']
+        parallel = analyze(binary, workspace, '--throws-cache', 'state.json', threads=4)
+        assert signature(parallel) == signature(serial)
+        assert signature(analyze(binary, workspace, '--throws-cache', 'state.json')) == signature(serial)
+        print('Worker count preserves nested calls and specialization-budget diagnostics: passed', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mago', required=True)
     args = parser.parse_args()
     binary = str(Path(args.mago).resolve())
     corpus = Path(__file__).resolve().parent
+    workers_preserve_context_budget(binary)
     cache_shape_contexts(binary)
     # Check disputed callback effects against PHP execution, independently of both analyzers.
     runtime = command([
@@ -131,6 +160,7 @@ echo json_encode($effects, JSON_THROW_ON_ERROR);
         shutil.copytree(corpus / 'dependencies', workspace / 'dependencies')
         write_config(workspace)
         issues = analyze(binary, workspace)
+        assert signature(analyze(binary, workspace, threads=4)) == signature(issues)
         assert missing(issues, 'ThrowsProbe\\cross_file\\caller')
         assert not missing(issues, 'ThrowsProbe\\conditional\\caller_false')
         assert missing(issues, 'ThrowsProbe\\conditional\\caller_true')
@@ -156,7 +186,7 @@ echo json_encode($effects, JSON_THROW_ON_ERROR);
         stat = leaf.stat()
         leaf.write_text(leaf.read_text().replace('DomainException', 'LengthException'))
         os.utime(leaf, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-        changed = analyze(binary, workspace, '--throws-cache', 'state.json')
+        changed = analyze(binary, workspace, '--throws-cache', 'state.json', threads=4)
         assert signature(changed) == signature(analyze(binary, workspace))
         assert 'LengthException' in missing(changed, 'ThrowsProbe\\cross_file\\caller')[0]['message']
         leaf.write_text(leaf.read_text().replace('throw new \\LengthException();', ''))
@@ -203,13 +233,18 @@ echo json_encode($effects, JSON_THROW_ON_ERROR);
         shutil.copytree(corpus / 'dependencies', workspace / 'dependencies')
         write_config(workspace)
         external_before = (workspace / 'dependencies/external.php').read_bytes()
+        sources = {file: file.read_bytes() for file in (workspace / 'cases').glob('*.php')}
         analyze(binary, workspace, '--fix', '--potentially-unsafe')
         for file in (workspace / 'cases').glob('*.php'):
             command(['php', '-l', str(file)], workspace)
         remaining = analyze(binary, workspace)
         assert not remaining, signature(remaining)
         hashes = {file: file.read_bytes() for file in (workspace / 'cases').glob('*.php')}
-        analyze(binary, workspace, '--fix', '--potentially-unsafe')
+        for file, content in sources.items():
+            file.write_bytes(content)
+        analyze(binary, workspace, '--fix', '--potentially-unsafe', threads=4)
+        assert all(file.read_bytes() == content for file, content in hashes.items()), 'Worker count changed PHPDoc fixes'
+        analyze(binary, workspace, '--fix', '--potentially-unsafe', threads=4)
         assert all(file.read_bytes() == content for file, content in hashes.items())
         assert (workspace / 'dependencies/external.php').read_bytes() == external_before
         print('Whole corpus fixing, PHP syntax and idempotence: passed', flush=True)

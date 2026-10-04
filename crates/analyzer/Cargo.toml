@@ -41,6 +41,7 @@ diffy = { workspace = true }
 itoa = { workspace = true }
 ryu = { workspace = true }
 memchr = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 mago-prelude = { workspace = true, features = ["build"] }

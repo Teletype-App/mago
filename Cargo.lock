@@ -1491,6 +1491,7 @@ dependencies = [
  "mago-text-edit",
  "mago-word",
  "memchr",
+ "rayon",
  "regex",
  "ryu",
  "serde",
