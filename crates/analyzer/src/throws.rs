@@ -384,6 +384,11 @@ pub struct ThrowsSummaries {
     pub dependencies: HashMap<FileId, HashSet<FileId>>,
 }
 
+struct ContextDependencies {
+    files: HashSet<FileId>,
+    requests: HashSet<ThrowsContext>,
+}
+
 impl ThrowsSummaries {
     fn reset_effects(&mut self, codebase: &CodebaseMetadata, files: &HashSet<FileId>) {
         for (id, summary) in &mut self.functions {
@@ -469,6 +474,8 @@ impl ThrowsSummaries {
         // but metadata stays fixed while body effects reach their fixed point.
         // Start conservatively for seeded files not visited in this operation.
         let mut effect_dependencies = summaries.dependencies.clone();
+        let mut context_dependencies = HashMap::<ThrowsContext, ContextDependencies>::default();
+        let mut changed_effect_files = summaries.source_files.clone();
         let mut previous_functions: HashMap<FunctionLikeIdentifier, Option<FunctionThrowsSummary>> = HashMap::default();
         let mut previous_contexts: HashMap<ThrowsContext, Option<FunctionThrowsSummary>> = HashMap::default();
         'inference: loop {
@@ -537,6 +544,7 @@ impl ThrowsSummaries {
                 *context_counts.entry(key.function).or_default() += 1;
             }
             let mut inferred_contexts = 0;
+            let mut reused_contexts = 0;
             let mut ready = HashMap::default();
             let workers = rayon::current_num_threads();
             let batch_size = if workers == 1 { 1 } else { workers.saturating_mul(16) };
@@ -557,6 +565,8 @@ impl ThrowsSummaries {
                         summaries.contexts.clear();
                         summaries.dependencies.clear();
                         effect_dependencies.clear();
+                        context_dependencies.clear();
+                        changed_effect_files = summaries.source_files.clone();
                         work = summaries.source_files.clone();
                         previous_functions.clear();
                         previous_contexts.clear();
@@ -607,6 +617,21 @@ impl ThrowsSummaries {
                     let results = batch
                         .par_iter()
                         .map_init(LocalArena::new, |arena, key| {
+                            // Replay both the effect and its discovered requests.
+                            // The priority queue still admits every key in the same
+                            // order, including at the specialization budget.
+                            if let Some(dependencies) = context_dependencies.get(key)
+                                && dependencies.files.is_disjoint(&changed_effect_files)
+                                && let Some(summary) = summaries.contexts.get(key)
+                            {
+                                return Some(Ok((
+                                    summary.clone(),
+                                    dependencies.files.clone(),
+                                    dependencies.requests.clone(),
+                                    None,
+                                    true,
+                                )));
+                            }
                             let started = trace_enabled.then(std::time::Instant::now);
                             let metadata = function_metadata(codebase, &key.function)?;
                             let file = files_by_id.get(&metadata.span.file_id)?;
@@ -626,6 +651,7 @@ impl ThrowsSummaries {
                                     artifacts.throws_dependencies,
                                     artifacts.throws_context_requests,
                                     started.map(|start| start.elapsed()),
+                                    false,
                                 )
                             }))
                         })
@@ -637,7 +663,12 @@ impl ThrowsSummaries {
                 let Some(result) = ready.remove(&specialization) else {
                     continue;
                 };
-                let (summary, dependencies, requests, elapsed) = result?;
+                let (summary, dependencies, requests, elapsed, reused) = result?;
+                reused_contexts += usize::from(reused);
+                context_dependencies.insert(
+                    specialization.clone(),
+                    ContextDependencies { files: dependencies.clone(), requests: requests.clone() },
+                );
                 next.dependencies.entry(file.id).or_default().extend(dependencies.iter().copied());
                 effect_dependencies.entry(file.id).or_default().extend(dependencies);
                 pending.extend(requests.into_iter().filter(|key| !next.contexts.contains_key(key)));
@@ -648,7 +679,7 @@ impl ThrowsSummaries {
                 }
                 next.contexts.insert(specialization, summary);
             }
-            tracing::trace!(round, inferred_contexts, contexts = next.contexts.len(), elapsed = ?round_started.elapsed(), "Completed throws inference round");
+            tracing::trace!(round, inferred_contexts, reused_contexts, contexts = next.contexts.len(), elapsed = ?round_started.elapsed(), "Completed throws inference round");
             if next == summaries {
                 return Ok(next);
             }
@@ -682,6 +713,7 @@ impl ThrowsSummaries {
                 .filter(|(_, callees)| !callees.is_disjoint(&changed))
                 .map(|(file, _)| *file)
                 .collect();
+            changed_effect_files = changed.clone();
             work.extend(changed);
             let reverses_previous_round = (!changed_functions.is_empty() || !changed_contexts.is_empty())
                 && changed_functions.len() == previous_functions.len()
@@ -702,6 +734,7 @@ impl ThrowsSummaries {
                     }
                 }
                 for key in changed_contexts.keys() {
+                    context_dependencies.remove(key);
                     if let Some(summary) = next.contexts.get_mut(key) {
                         *summary = FunctionThrowsSummary::default();
                     }
